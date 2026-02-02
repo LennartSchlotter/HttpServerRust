@@ -1,6 +1,6 @@
 use std::{io::Error, sync::Arc};
 
-use crate::internal::{request::request::Request, response::response::{Response, StatusCode, html_response}, server::{handler::Handler, server::serve}};
+use crate::internal::{request::request::{HttpError, Request}, response::response::{Response, StatusCode, html_response}, server::{handler::Handler, server::serve}};
 
 struct MyHandler;
 
@@ -8,12 +8,12 @@ struct MyHandler;
  * Minimal implementation, accepting any endpoint
  */
 impl Handler for MyHandler {
-    fn call<W: std::io::Write>(&self, request: &Request, mut stream: &mut W) -> Option<Response> {
+    fn call<W: std::io::Write>(&self, request: &Request, stream: &mut W) -> Result<Option<Response>, HttpError> {
         match request.request_line.request_target.as_str() {
             _ => {
                 let body = "<html><body><h1>All good!</h1></body></html>";
                 let response = html_response(StatusCode::Ok, body);
-                return Some(response);
+                return Ok(Some(response));
             }
         }
     }

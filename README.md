@@ -2,7 +2,7 @@
 Standalone Rust Program, serving as a learning purpose. The goal is to implement a HTTP/1.1 Server in Rust to get familiar with the intricacies of the language.
 
 ## Additional Files
-The `src/tmp` folder includes additional files of certain sub-goals achieved in the process of creating the server. They showcase the learning steps in a more detailed way.
+The `/tmp` folder includes additional files of certain sub-goals achieved in the process of creating the server. They showcase the learning steps in a more detailed way.
 
 ## Documentation
 The code features at times extensive in-line comments to document issues, lessons learned as well as possibilities for extending the code.

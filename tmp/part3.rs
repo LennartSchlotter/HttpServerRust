@@ -1,9 +1,8 @@
-use std::io::{self, Error};
+use std::io::Error;
 use std::thread;
 use std::{fs::File, io::Read};
-use std::sync::mpsc::{self, SendError};
+use std::sync::mpsc::{self};
 
-use thiserror::Error;
 
 /**
  * Read File, 8 Bytes a time. Output full lines. SPLIT ON LINEBREAKS VER.
