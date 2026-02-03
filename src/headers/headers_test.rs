@@ -11,8 +11,8 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
-        assert_eq!(size, 22);
-        assert_eq!(done, false);
+        assert_eq!(size, 24);
+        assert_eq!(done, true);
     }
 
     #[test]
@@ -24,8 +24,8 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
-        assert_eq!(size, 30);
-        assert_eq!(done, false);
+        assert_eq!(size, 32);
+        assert_eq!(done, true);
     }
 
     #[test]
@@ -37,8 +37,8 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
-        assert_eq!(size, 33);
-        assert_eq!(done, false);
+        assert_eq!(size, 35);
+        assert_eq!(done, true);
     }
 
     #[test]
@@ -50,8 +50,8 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
-        assert_eq!(size, 21);
-        assert_eq!(done, false);
+        assert_eq!(size, 23);
+        assert_eq!(done, true);
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn multple_values_valid() {
+    fn multiple_values_valid() {
         let input = "Host: localhost:8080\r\n\r\n";
         let mut headers = Headers::new();
         headers.insert("host", "localhost:8081");
@@ -117,7 +117,7 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8081, localhost:8080");
-        assert_eq!(size, 22);
-        assert_eq!(done, false);
+        assert_eq!(size, 24);
+        assert_eq!(done, true);
     }
 }

@@ -70,34 +70,51 @@ impl Headers {
         self.0.iter().map(|(key, value)| (key.as_str(), value.as_str()))
     }
 
-    //TODO This can only parse one at a time. We only take the first split.
-    //FIXME Ideally we could try to recognize multiple \r\ns in here, EXCEPT for if they come right back to back as that would indicate the end of the headers.
-    //Performance is negligible, but the issue is always returning to the main loop, where .drain() is called multiple times.
-    ///////////////
     /// Parses passed data from a byte array to a header.
     /// 
     /// Returns the amount of data parsed to handle cases where the array contains incomplete data that should be kept.
     /// 
     pub fn parse_header<B>(&mut self, data: B) -> Result<(usize, bool),HttpError> where B: AsRef<[u8]> {
-        
+
         // size of \r\n fixed as 2
         const CRLF_LEN: usize = 2;
         let string = String::from_utf8_lossy(&data.as_ref()[..]);
+        let mut line_length = 0;
 
-        let index = match string.find("\r\n") {
-            None => return Ok((0, false)),
-            Some(0) => return Ok((2, true)), //If there is a \r\n immediately on index 0, we reached the final linebreak separating headers from body
-            Some(idx) => idx,
-        };
+        if string.find("\r\n\r\n").is_some() {
+            let headers = string.split("\r\n");
+            for header in headers {
+                if header.is_empty() {
+                    line_length += CRLF_LEN; //There is still one linebreak left here, the one separating headers from body
+                    break;
+                }
+                line_length += header.len() + CRLF_LEN;
+                self.create_header_from_string(header)?;
+            }
+            return Ok((line_length, true));
+        }
 
-        let mut split = string.split("\r\n");
-        let line = split.next().unwrap(); //We can safely unwrap as split will always return at least one
-        
-        //Trim any optional whitespaces and split the remainders on the colon. 
-        let trim = line.trim();
-        let result = trim.split_once(':').ok_or(HttpError::MalformedHeader);
+        if string.find("\r\n").is_some() {
+            if let Some((base, _end)) = string.rsplit_once("\r\n") {
+                for line in base.split("\r\n") {
+                    if line.is_empty() {
+                        line_length += CRLF_LEN; //There is still one linebreak left here, the one separating headers from body
+                        return Ok((line_length, true));
+                    }
+                    line_length += line.len() + CRLF_LEN;
+                    self.create_header_from_string(line)?;
+                }
+                return Ok((line_length, false));
+            }
+        }
+
+        return Ok((0, false));
+    }
+
+    fn create_header_from_string(&mut self, string: &str) -> Result<(), HttpError> {
+        let trim = string.trim();
+        let result = trim.split_once(":").ok_or(HttpError::MalformedHeader);
         let (key, mut value) = result.unwrap();
-
         value = value.trim();
 
         if key.find(" ").is_some() {
@@ -109,16 +126,14 @@ impl Headers {
         }
 
         let key_lowercase = key.to_lowercase();
-
+        
         if self.0.contains_key(&key_lowercase) {
             self.append(key_lowercase, value);
         } else {
             self.insert(key_lowercase, value);
         }
 
-        let line_length = index + CRLF_LEN;
-
-        return Ok((line_length, false));
+        return Ok(())
     }
 }
 

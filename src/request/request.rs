@@ -10,7 +10,7 @@ use crate::{headers::headers::{Headers}, request_line::request_line::{RequestLin
 #[derive(Debug)]
 pub struct Request {
     /// The state of the parser.
-    pub(crate) parse_state: ParseState, //What is a crate
+    pub parse_state: ParseState,
     /// A custom struct representing the request line.
     pub request_line: RequestLine,
     /// A custom struct representing a list of headers.
@@ -92,7 +92,7 @@ pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError
             ParseState::Initialized | ParseState::RequestStateParsingHeaders | ParseState::ParseBody => {
                 let parsed = request.parse(&buffer[..bytes_read])?;
                 if parsed > 0 {
-                    buffer.drain(0..parsed); //FIXME This is rather expensive. So calling this 3x for 3 Headers is the only problematic bit. See parse_header() fn comment.
+                    buffer.drain(0..parsed);
                     bytes_read -= parsed;
                     continue;
                 }
@@ -158,12 +158,17 @@ impl Request {
 
                 let content_length: usize = content.parse()?;
 
-                if data.len() > content_length { //TODO This might not catch all since the data arrives in small packages, if small enough to match the invalid content_length
-                    return Err(HttpError::InvalidBodyLength); //TODO Case 1: Leftover data from prev iteration matches content-length //Case 2: Data packages small enough to never exceed size of content_length
+                let already_received = self.body.len();
+                if already_received > content_length {
+                    return Err(HttpError::InvalidBodyLength);
                 }
 
                 let remaining = content_length.saturating_sub(self.body.len());
                 let to_take = remaining.min(data.len());
+
+                if to_take < data.len() {
+                    return Err(HttpError::InvalidBodyLength);
+                }
 
                 self.body.extend_from_slice(&data[..to_take]);
 
