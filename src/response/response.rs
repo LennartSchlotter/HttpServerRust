@@ -106,9 +106,9 @@ pub fn write_trailers<W: io::Write>(mut writer: W, headers: Headers) -> Result<(
 }
 
 /// Helper function to remove boilerplate for creating html responses with associated headers.
-pub fn html_response(status_code: StatusCode, html: &str) -> Response {
+pub fn html_response(status: StatusCode, html: &str) -> Response {
     let mut headers = Headers::new();
     headers.insert("content-type", "text/html");
     headers.insert("content-length", html.len().to_string());
-    return Response { status: status_code, headers: headers, body: html.as_bytes().to_vec()};
+    Response { status, headers, body: html.as_bytes().to_vec()}
 }

@@ -50,14 +50,14 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                 }
             }
         }
-        return Ok(())
+        Ok(())
     }
 }
 
 /// Serves an instance of the Http Server based on the passed handler on the specified port
 pub fn serve<H: Handler + Send + Sync + 'static>(port: u16, handler: Arc<H>) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    let state = ServerState {listener: listener, handler: handler, closed: AtomicBool::new(false)};
+    let state = ServerState {listener, handler, closed: AtomicBool::new(false)};
     let state_for_main = Arc::new(state);
     let state_for_thread = Arc::clone(&state_for_main);
     let serverhandle = Server {server_state: state_for_main};
@@ -66,7 +66,7 @@ pub fn serve<H: Handler + Send + Sync + 'static>(port: u16, handler: Arc<H>) -> 
             eprintln!("Encountered error listening: {e}");
         }
     });
-    return Ok(serverhandle);
+    Ok(serverhandle)
 }
 
 /// Handles a specific connection's parsing based on the associated TCP stream.

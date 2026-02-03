@@ -18,7 +18,7 @@ pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize),
     const VALID_METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"];
     const CRLF_LEN: usize = 2;
 
-    if request.find("\r\n").is_none() {
+    if !request.contains("\r\n") {
         return Ok((None, 0));
     }
 
@@ -33,7 +33,7 @@ pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize),
     }
 
     let method = parts[0].to_string();
-    let target = parts[1].to_string();
+    let request_target = parts[1].to_string();
     let http_version = parts[2].strip_prefix("HTTP/").ok_or(HttpError::MalformedRequestLine)?.to_string();
 
     if !VALID_METHODS.contains(&method.as_str()) {
@@ -42,5 +42,5 @@ pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize),
 
     let line_length = first.len() + CRLF_LEN;
 
-    Ok((Some(RequestLine { method: method, request_target: target, http_version: http_version }), line_length))
+    Ok((Some(RequestLine { method, request_target, http_version }), line_length))
 }

@@ -78,7 +78,7 @@ impl Headers {
 
         // size of \r\n fixed as 2
         const CRLF_LEN: usize = 2;
-        let string = String::from_utf8_lossy(&data.as_ref()[..]);
+        let string = String::from_utf8_lossy(data.as_ref());
         let mut line_length = 0;
 
         if string.find("\r\n\r\n").is_some() {
@@ -94,8 +94,8 @@ impl Headers {
             return Ok((line_length, true));
         }
 
-        if string.find("\r\n").is_some() {
-            if let Some((base, _end)) = string.rsplit_once("\r\n") {
+        if string.find("\r\n").is_some()
+            && let Some((base, _end)) = string.rsplit_once("\r\n") {
                 for line in base.split("\r\n") {
                     if line.is_empty() {
                         line_length += CRLF_LEN; //There is still one linebreak left here, the one separating headers from body
@@ -105,10 +105,8 @@ impl Headers {
                     self.create_header_from_string(line)?;
                 }
                 return Ok((line_length, false));
-            }
         }
-
-        return Ok((0, false));
+        Ok((0, false))
     }
 
     fn create_header_from_string(&mut self, string: &str) -> Result<(), HttpError> {
@@ -117,7 +115,7 @@ impl Headers {
         let (key, mut value) = result.unwrap();
         value = value.trim();
 
-        if key.find(" ").is_some() {
+        if key.contains(" ") {
             return Err(HttpError::MalformedHeader);
         }
 
@@ -133,7 +131,7 @@ impl Headers {
             self.insert(key_lowercase, value);
         }
 
-        return Ok(())
+        Ok(())
     }
 }
 

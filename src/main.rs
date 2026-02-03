@@ -15,12 +15,12 @@ impl Handler for MyHandler {
             "/yourproblem" => {
                 let body = "<html><body><h1>Bad Request</h1></body></html>"; //fs::read_to_string("example/400.html")
                 let response = html_response(StatusCode::BadRequest, body);
-                return Ok(Some(response));
+                Ok(Some(response))
             },
             "/myproblem" => {
                 let body = "<html><body><h1>Internal Server Error</h1></body></html>";
                 let response = html_response(StatusCode::InternalServerError, body);
-                return Ok(Some(response));
+                Ok(Some(response))
             },
             path if path.starts_with("/httpbin/stream/") => {
                 let suffix = path.strip_prefix("/httpbin/stream/").unwrap(); //can safely unwrap
@@ -43,7 +43,7 @@ impl Handler for MyHandler {
                         break;
                     }
 
-                    write_chunked_body(&mut stream, &mut buffer[..data])?;
+                    write_chunked_body(&mut stream,  &buffer[..data])?;
                     full_body.extend_from_slice(&buffer[..data]); //This is expensive just to compute the hash, could update the hash on each iteration
                 }
                 if headers.get("trailer").is_some() {
@@ -52,24 +52,24 @@ impl Handler for MyHandler {
                     hasher.update(&full_body);
                     let digest = hex::encode(hasher.finalize());
                     trailers.insert("X-Content-SHA256", digest);
-                    trailers.insert("X-Content-Length", &full_body.len().to_string());
+                    trailers.insert("X-Content-Length", full_body.len().to_string());
                     write_final_body_chunk(&mut stream, Some(trailers))?;
                 } else {
                     write_final_body_chunk(&mut stream, None)?;
                 }
-                return Ok(None);
+                Ok(None)
             },
             "/mp4" => {
                 let file = std::fs::read("assets/video.mp4")?;
                 let mut headers = Headers::new();
                 headers.insert("content-type", "video/mp4");
                 headers.insert("content-length", file.len().to_string());
-                return Ok(Some(Response { status: StatusCode::Ok, headers: headers, body: file }));
+                Ok(Some(Response { status: StatusCode::Ok, headers, body: file }))
             },
             _ => {
                 let body = "<html><body><h1>All good!</h1></body></html>";
                 let response = html_response(StatusCode::Ok, body);
-                return Ok(Some(response));
+                Ok(Some(response))
             }
         }
     }
@@ -82,5 +82,5 @@ fn main() -> Result<(), HttpError> {
     serve(PORT, handler_arc)?;
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf)?;
-    return Ok(())
+    Ok(())
 }

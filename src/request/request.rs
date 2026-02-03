@@ -83,7 +83,7 @@ pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError
     let request_line = RequestLine {method: String::new(), request_target: String::new(), http_version: String::new()};
     let headers = Headers::new();
     let body = Vec::new();
-    let mut request = Request {parse_state: ParseState::Initialized, request_line: request_line, headers: headers, body: body};
+    let mut request = Request {parse_state: ParseState::Initialized, request_line, headers, body};
     let mut bytes_read = 0;
 
     loop{
@@ -124,11 +124,11 @@ impl Request {
     /// 
     /// Returns the size of the parsed data.
     pub fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
-        let string = String::from_utf8_lossy(&data[..]);
+        let string = String::from_utf8_lossy(data);
         let mut total_size = 0;
         match self.parse_state {
             ParseState::Initialized => {
-                let (request_line_result, request_line_size) = parse_request_line(&string.to_string())?;
+                let (request_line_result, request_line_size) = parse_request_line(string.as_ref())?;
                 if let Some(request_line) = request_line_result {
                     if request_line.http_version != "1.1" {
                         return Err(HttpError::UnsupportedVersion(request_line.http_version.to_string()))
@@ -137,7 +137,7 @@ impl Request {
                     self.request_line = request_line;
                 }
                 total_size = request_line_size;
-                return Ok(total_size);
+                Ok(total_size)
             },
             ParseState::RequestStateParsingHeaders => {
                 let (header_size, done) = self.headers.parse_header(string.as_bytes())?;
@@ -145,7 +145,7 @@ impl Request {
                 if done {
                     self.parse_state = ParseState::ParseBody;
                 }
-                return Ok(total_size);
+                Ok(total_size)
             },
             ParseState::ParseBody => {
                 let content = match self.headers.get("content-length") {
