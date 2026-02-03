@@ -10,7 +10,6 @@ pub struct Response {
 }
 
 /// Enum containing the valid status codes used in this application.
-// FIXME Will likely be expanded in the future.
 #[derive(Clone, Copy, Debug)]
 pub enum StatusCode {
     Ok = 200,
@@ -90,7 +89,7 @@ pub fn write_final_body_chunk<W: io::Write>(mut writer: W, trailers: Option<Head
     writer.write_all("0\r\n".as_bytes())?;
     match trailers {
         Some(trailers) => {
-            write_trailers(&mut writer, trailers).unwrap(); //error handling
+            write_trailers(&mut writer, trailers)?;
         }
         None => writer.write_all("\r\n".as_bytes())?,
     }
