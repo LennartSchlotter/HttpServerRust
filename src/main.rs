@@ -6,9 +6,8 @@
 //! 
 //! Refer to the library documentation of reusable components.
 use std::{io::Read, sync::Arc};
+use httpserver::{http::{headers::Headers, request::{HttpError, Request}, response::{Response, StatusCode, html_response, write_chunked_body, write_final_body_chunk, write_headers, write_status_line}}, runtime::{handler::Handler, server::serve}};
 use sha2::{Sha256, Digest};
-
-use httpserver::{headers::headers::Headers, request::request::{HttpError, Request}, response::response::{Response, StatusCode, html_response, write_chunked_body, write_final_body_chunk, write_headers, write_status_line}, server::{handler::Handler, server::serve}};
 
 struct MyHandler;
 
@@ -30,10 +29,10 @@ impl Handler for MyHandler {
                 Ok(Some(response))
             },
             path if path.starts_with("/httpbin/stream/") => {
-                let suffix = path.strip_prefix("/httpbin/stream/").unwrap(); //can safely unwrap
+                let suffix = path.strip_prefix("/httpbin/stream/").ok_or(HttpError::InternalInvariantViolated)?;
                 let url = "https://httpbin.org/stream/".to_string() + suffix;
 
-                let mut response = reqwest::blocking::get(url).expect("Should've been able to retrieve data from the URL");
+                let mut response = reqwest::blocking::get(url)?;
                 write_status_line(&mut stream, StatusCode::BadRequest)?;
                 let mut headers = Headers::new();
                 headers.insert("content-type", "text/plain");
