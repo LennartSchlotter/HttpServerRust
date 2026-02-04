@@ -1,3 +1,10 @@
+//! # Rust HTTP Server
+//! 
+//! This binary crate provides a HTTP server implementation built on top of the library in this crate
+//! 
+//! It supports basic request parsing and response generation.
+//! 
+//! Refer to the library documentation of reusable components.
 use std::{io::Read, sync::Arc};
 use sha2::{Sha256, Digest};
 

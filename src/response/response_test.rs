@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn write_status_line_produces_correct_http_line() {
         let mut buffer = Vec::new();
-        let expected = "HTTP/1.1 200 OK\r\n".as_bytes();
+        let expected = b"HTTP/1.1 200 OK\r\n";
 
         write_status_line(&mut buffer, StatusCode::Ok).unwrap();
         
@@ -32,7 +32,7 @@ mod tests {
         let mut buffer = Vec::new();
         let mut headers = Headers::new();
         headers.insert("host", "localhost:8080");
-        let expected = "host: localhost:8080\r\n\r\n".as_bytes();
+        let expected = b"host: localhost:8080\r\n\r\n";
 
         write_headers(&mut buffer, &mut headers).unwrap();
         
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn write_chunked_bodies_formats_body() {
         let mut buffer = Vec::new();
-        let data = "Let us see what happens".as_bytes();
+        let data = b"Let us see what happens";
         let expected = 
         "17\r\n\
         Let us see what happens\r\n\

@@ -20,7 +20,7 @@ mod tests {
         }
     }
 
-    impl<'a> io::Read for ChunkReader<'a> {
+    impl io::Read for ChunkReader<'_> {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             if self.pos >= self.data.len() {
                 return Ok(0)

@@ -3,8 +3,11 @@ use crate::request::request::HttpError;
 /// A Http Request Line representation with method, target and http version
 #[derive(Debug)]
 pub struct RequestLine {
+    /// The method of the parsed request
     pub method: String,
+    /// The target endpoint of the request
     pub request_target: String,
+    /// The HTTP version used in the request
     pub http_version: String,
 }
 
@@ -13,7 +16,11 @@ pub struct RequestLine {
 /// Returns an Optional Request Line in case the passed string did not contain the entire line
 /// Returns the size of the parsed data to differentiate between unfinished parsing and completion.
 /// 
-/// Throws an HTTP Error if invalid
+/// # Errors
+/// 
+/// Throws an `Http Error` if the parsed request line is invalid.
+/// 
+/// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
 pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize), HttpError> {
     const VALID_METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"];
     const CRLF_LEN: usize = 2;
@@ -23,8 +30,8 @@ pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize),
     }
 
     let mut line = request.split("\r\n");
-    let first = line.next().unwrap();
-    let parts: Vec<&str> = first.split(" ").collect();
+    let first = line.next().ok_or(HttpError::InternalInvariantViolated)?;
+    let parts: Vec<&str> = first.split(' ').collect();
 
     // Also ensures below [i] checks cannot panic and end the application, else could also use explitic .next() and handle mnaually.
     // parts.next().ok_or(HttpError::MalformedRequestLine)?

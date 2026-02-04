@@ -1,8 +1,8 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use crate::request::request::HttpError;
 
-/// A HashMap of two strings representing key, value pairs used in HTTP Headers.
+/// A `HashMap` of two strings representing key, value pairs used in HTTP Headers.
 /// 
 /// Hash Maps do not guarantee ordering in Rust. SHOULD be fine as Http Headers / Trailers do not need to be ordered
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -10,7 +10,8 @@ pub struct Headers(HashMap<String, String>);
 
 impl Headers {
 
-    /// Returns a new HashMap constructed as a 'Headers' struct
+    /// Returns a new `HashMap` constructed as a 'Headers' struct
+    #[must_use]
     pub fn new() -> Self {
         Self(HashMap::new())
     }
@@ -37,7 +38,7 @@ impl Headers {
     /// assert_eq!(headers.get("drink"), Some("milk"));
     /// ```
     pub fn get(&mut self, key: &str) -> Option<&str> {
-        self.0.get(key).map(|s| s.as_str())
+        self.0.get(key).map(String::as_str)
     }
 
     /// Appends a key / value pair into the Header.
@@ -74,6 +75,11 @@ impl Headers {
     /// 
     /// Returns the amount of data parsed to handle cases where the array contains incomplete data that should be kept.
     /// 
+    /// # Errors
+    /// 
+    /// Returns an `HttpError` if parsing the header fails.
+    /// 
+    /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
     pub fn parse_header<B>(&mut self, data: B) -> Result<(usize, bool),HttpError> where B: AsRef<[u8]> {
 
         // size of \r\n fixed as 2
@@ -111,11 +117,11 @@ impl Headers {
 
     fn create_header_from_string(&mut self, string: &str) -> Result<(), HttpError> {
         let trim = string.trim();
-        let result = trim.split_once(":").ok_or(HttpError::MalformedHeader);
-        let (key, mut value) = result.unwrap();
+        let result = trim.split_once(':').ok_or(HttpError::MalformedHeader);
+        let (key, mut value) = result?;
         value = value.trim();
 
-        if key.contains(" ") {
+        if key.contains(' ') {
             return Err(HttpError::MalformedHeader);
         }
 
@@ -135,8 +141,8 @@ impl Headers {
     }
 }
 
-/// Helper method to determine whether the passed character is valid according to https://www.rfc-editor.org/rfc/rfc9110#section-5.6.2
-fn is_valid_char(c: char) -> bool {
+/// Helper method to determine whether the passed character is valid according to <https://www.rfc-editor.org/rfc/rfc9110#section-5.6.2>
+const fn is_valid_char(c: char) -> bool {
     if c.is_ascii_alphanumeric() {
         return true;
     }

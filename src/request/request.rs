@@ -1,8 +1,8 @@
-use std::io::{Read};
+use std::io::Read;
 
 use thiserror::Error;
 
-use crate::{headers::headers::{Headers}, request_line::request_line::{RequestLine, parse_request_line}};
+use crate::{headers::headers::Headers, request_line::request_line::{RequestLine, parse_request_line}};
 
 /// Representation of a HTTP request with request line, headers and body
 /// 
@@ -20,7 +20,7 @@ pub struct Request {
 }
 
 /// Represents the different stages of the parser.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ParseState {
     /// The parser was initialized.
     Initialized,
@@ -70,13 +70,22 @@ pub enum HttpError {
     /// There was an error parsing an integer to a string.
     #[error("Parsing error: {0}")]
     ParseError(#[from] std::num::ParseIntError),
+
+    /// An internal invariant was violated. 
+    /// This is most likely used as a safety net to catch errors that logically should not be able to happen.
+    #[error("Internal invariant violated")]
+    InternalInvariantViolated,
 }
 
 /// Parses the contents of a reader to a Request
 /// 
 /// The reader may be of any type that implements `Read`
 /// 
-/// Throws a HttpError if the request was not valid.
+/// # Errors
+/// 
+/// Throws a `HttpError` if the request was not valid.
+/// 
+/// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
 pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
@@ -105,15 +114,14 @@ pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError
                 if read == 0 {
                     if matches!(request.parse_state, ParseState::Done) {
                         return Ok(request);
-                    } else {
-                        return Err(HttpError::UnexpectedEOF);
                     }
+                    return Err(HttpError::UnexpectedEOF);
                 }
 
                 buffer.extend_from_slice(&temp[0..read]);
                 bytes_read += read;
             }
-        };
+        }
     }
 
 }
@@ -123,6 +131,12 @@ impl Request {
     /// Parses passed byte data.
     /// 
     /// Returns the size of the parsed data.
+    /// 
+    /// # Errors
+    /// 
+    /// Throws an `HttpError` if the parsing fails.
+    /// 
+    /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
     pub fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
         let string = String::from_utf8_lossy(data);
         let mut total_size = 0;
@@ -131,7 +145,7 @@ impl Request {
                 let (request_line_result, request_line_size) = parse_request_line(string.as_ref())?;
                 if let Some(request_line) = request_line_result {
                     if request_line.http_version != "1.1" {
-                        return Err(HttpError::UnsupportedVersion(request_line.http_version.to_string()))
+                        return Err(HttpError::UnsupportedVersion(request_line.http_version))
                     }
                     self.parse_state = ParseState::RequestStateParsingHeaders;
                     self.request_line = request_line;
@@ -148,12 +162,9 @@ impl Request {
                 Ok(total_size)
             },
             ParseState::ParseBody => {
-                let content = match self.headers.get("content-length") {
-                    Some(value) => value,
-                    None => {
-                        self.parse_state = ParseState::Done;
-                        return Ok(total_size);
-                    }
+                let Some(content) = self.headers.get("content-length") else {
+                    self.parse_state = ParseState::Done;
+                    return Ok(total_size);
                 };
 
                 let content_length: usize = content.parse()?;

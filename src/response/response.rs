@@ -3,19 +3,28 @@ use std::{fmt::{self}, io::{self}};
 use crate::{headers::headers::Headers, request::request::HttpError};
 
 /// Representation of a HTTP response with status code, headers and body
+#[derive(Debug)]
 pub struct Response {
+    /// The status code the response contains
     pub status: StatusCode,
+    /// The headers the response contains
     pub headers: Headers,
+    /// A byte vector representing the body
     pub body: Vec<u8>,
 }
 
 /// Enum containing the valid status codes used in this application.
 #[derive(Clone, Copy, Debug)]
 pub enum StatusCode {
+    /// Represents a successful response
     Ok = 200,
+    /// Represents a successful creation
     Created = 201,
+    /// Represents an invalid request
     BadRequest = 400,
+    /// Represents the request target not being found as a valid endpoint
     NotFound = 404,
+    /// Represents an internal error of the server
     InternalServerError = 500,
 }
 
@@ -29,13 +38,14 @@ impl fmt::Display for StatusCode {
 impl StatusCode {
     
     /// Creates the string representation of the passed status code.
-    pub fn reason_phrase(&self) -> &str {
+    #[must_use]
+    pub const fn reason_phrase(&self) -> &str {
         match self {
-            StatusCode::Ok => "OK",
-            StatusCode::Created => "Created",
-            StatusCode::BadRequest => "Bad Request",
-            StatusCode::NotFound => "Not Found",
-            StatusCode::InternalServerError => "Internal Server Error",
+            Self::Ok => "OK",
+            Self::Created => "Created",
+            Self::BadRequest => "Bad Request",
+            Self::NotFound => "Not Found",
+            Self::InternalServerError => "Internal Server Error",
         }
     }
 }
@@ -43,7 +53,11 @@ impl StatusCode {
 /// Write the status line to the passed writer.
 /// 
 /// Hardcodes HTTP/1.1 due to the limit of the Server to that version.
-pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode ) -> std::io::Result<()>{
+/// 
+/// # Errors
+/// 
+/// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
+pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode ) -> io::Result<()>{
     write!(writer, "HTTP/1.1 {} {}\r\n", status_code as u16, status_code.reason_phrase())?;
     Ok(())
 }
@@ -52,9 +66,13 @@ pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode ) 
 /// 
 /// Given a hashmap of headers, iterates through them and prints the keys and values in HTTP valid format.
 /// Also prints the final linebreak separating headers from the HTTP body.
-pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> std::io::Result<()> {
+/// 
+/// # Errors
+/// 
+/// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
+pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::Result<()> {
     for (key, value) in headers.iter() {
-        writer.write_all(format!("{}: {}\r\n", key, value).as_bytes())?;
+        writer.write_all(format!("{key}: {value}\r\n").as_bytes())?;
     }
     writer.write_all(b"\r\n")?;
     Ok(())
@@ -66,12 +84,16 @@ pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> std:
 /// [Length in Hex]\r\n
 /// 
 /// [Data]\r\n
+/// 
+/// # Errors
+/// 
+/// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
 pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<(), HttpError> {
     let hex = format!("{:X}\r\n", data.len());
     writer.write_all(hex.as_bytes())?;
 
     writer.write_all(data)?;
-    writer.write_all("\r\n".as_bytes())?;
+    writer.write_all(b"\r\n")?;
     Ok(())
 }
 
@@ -85,19 +107,27 @@ pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<()
 /// 0\r\n
 /// 
 /// \r\n
+/// 
+/// # Errors
+/// 
+/// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
 pub fn write_final_body_chunk<W: io::Write>(mut writer: W, trailers: Option<Headers>) -> Result<(), HttpError> {
-    writer.write_all("0\r\n".as_bytes())?;
+    writer.write_all(b"0\r\n")?;
     match trailers {
         Some(trailers) => {
-            write_trailers(&mut writer, trailers)?;
+            write_trailers(&mut writer, &trailers)?;
         }
-        None => writer.write_all("\r\n".as_bytes())?,
+        None => writer.write_all(b"\r\n")?,
     }
     Ok(())
 }
 
-/// Identical function to write_headers, kept for readability
-pub fn write_trailers<W: io::Write>(mut writer: W, headers: Headers) -> Result<(), HttpError> {
+/// Identical function to `write_headers`, kept for readability
+/// 
+/// # Errors
+/// 
+/// This function will return an `HttpError::Io` if any write operation to the underlying writer fails
+pub fn write_trailers<W: io::Write>(mut writer: W, headers: &Headers) -> Result<(), HttpError> {
     for (key, value) in headers.iter() {
         writer.write_all(format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes())?;
     }
@@ -106,6 +136,7 @@ pub fn write_trailers<W: io::Write>(mut writer: W, headers: Headers) -> Result<(
 }
 
 /// Helper function to remove boilerplate for creating html responses with associated headers.
+#[must_use]
 pub fn html_response(status: StatusCode, html: &str) -> Response {
     let mut headers = Headers::new();
     headers.insert("content-type", "text/html");
