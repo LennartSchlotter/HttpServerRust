@@ -12,7 +12,7 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
         assert_eq!(size, 24);
-        assert_eq!(done, true);
+        assert!(done);
     }
 
     #[test]
@@ -25,7 +25,7 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
         assert_eq!(size, 32);
-        assert_eq!(done, true);
+        assert!(done);
     }
 
     #[test]
@@ -38,7 +38,7 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
         assert_eq!(size, 35);
-        assert_eq!(done, true);
+        assert!(done);
     }
 
     #[test]
@@ -51,7 +51,7 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
         assert_eq!(size, 23);
-        assert_eq!(done, true);
+        assert!(done);
     }
 
     #[test]
@@ -64,7 +64,7 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8080");
         assert_eq!(size, 22);
-        assert_eq!(done, false);
+        assert!(!done);
     }
 
     #[test]
@@ -84,7 +84,7 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(size, 2);
-        assert_eq!(done, true);
+        assert!(done);
     }
 
     #[test]
@@ -96,7 +96,7 @@ mod tests {
 
         let (size, done) = result.unwrap();
         assert_eq!(size, 0);
-        assert_eq!(done, false);
+        assert!(!done);
     }
 
     #[test]
@@ -118,6 +118,6 @@ mod tests {
         let (size, done) = result.unwrap();
         assert_eq!(headers.get("host").unwrap(), "localhost:8081, localhost:8080");
         assert_eq!(size, 24);
-        assert_eq!(done, true);
+        assert!(done);
     }
 }
