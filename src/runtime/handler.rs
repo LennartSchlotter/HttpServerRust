@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::{request::request::{HttpError, Request}, response::response::Response};
+use crate::{http::request::{HttpError, Request}, http::response::Response};
 
 /// A trait that determines the handling for each server.
 pub trait Handler {

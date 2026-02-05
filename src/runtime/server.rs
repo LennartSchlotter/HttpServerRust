@@ -1,6 +1,8 @@
 use std::{io::{Error, Write}, net::{TcpListener, TcpStream}, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread, time::Duration};
 
-use crate::{request::request::{HttpError, request_from_reader}, response::response::{write_headers, write_status_line}, server::handler::Handler};
+use crate::http::request::{HttpError, request_from_reader};
+use crate::http::response::{write_headers, write_status_line};
+use crate::runtime::handler::Handler;
 
 /// A struct representing an instance of a `HttpServer`, containing the state of the server.
 #[derive(Debug)]
