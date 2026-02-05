@@ -88,9 +88,9 @@ pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::
 /// Writes the body in chunks
 ///
 /// # Output
-/// [Length in Hex]\r\n
+/// Length in Hex\r\n
 ///
-/// [Data]\r\n
+/// Data\r\n
 ///
 /// # Errors
 ///
