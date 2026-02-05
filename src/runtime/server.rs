@@ -1,4 +1,13 @@
-use std::{io::{Error, Write}, net::{TcpListener, TcpStream}, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread, time::Duration};
+use std::{
+    io::{Error, Write},
+    net::{TcpListener, TcpStream},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use crate::http::request::{HttpError, request_from_reader};
 use crate::http::response::{write_headers, write_status_line};
@@ -7,7 +16,7 @@ use crate::runtime::handler::Handler;
 /// A struct representing an instance of a `HttpServer`, containing the state of the server.
 #[derive(Debug)]
 pub struct Server<H: Handler> {
-    server_state: Arc<ServerState<H>>
+    server_state: Arc<ServerState<H>>,
 }
 
 /// A struct representing the state of a server with the associated listener, whether or not the server has been closed and the handler.
@@ -19,7 +28,6 @@ pub struct ServerState<H: Handler> {
 }
 
 impl<H: Handler> Server<H> {
-    
     /// Sets the closed state of the server it's called on.
     pub fn close(&self) {
         self.server_state.closed.store(true, Ordering::SeqCst);
@@ -27,12 +35,7 @@ impl<H: Handler> Server<H> {
 }
 
 impl<H: Handler + Send + Sync + 'static> ServerState<H> {
-    
-    /// Called on a `ServerState`, listening for connections
-    /// 
-    /// # Errors
-    /// 
-    /// Throws an `HttpError` if the listener 
+    /// Called on a `ServerState`, listening for connections.
     pub fn listen(self: Arc<Self>) {
         loop {
             if self.closed.load(Ordering::SeqCst) {
@@ -46,9 +49,8 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                         if let Err(e) = handle(stream, &*handler_clone) {
                             eprintln!("Encountered error handling the stream: {e}");
                         }
-                        
                     });
-                },
+                }
                 Err(error) => {
                     if self.closed.load(Ordering::SeqCst) {
                         break;
@@ -62,16 +64,25 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
 }
 
 /// Serves an instance of the Http Server based on the passed handler on the specified port
-/// 
+///
 /// # Errors
-/// 
+///
 /// Throws an Error if binding the tcp listener fails.
-pub fn serve<H: Handler + Send + Sync + 'static>(port: u16, handler: Arc<H>) -> Result<Server<H>, Error> {
+pub fn serve<H: Handler + Send + Sync + 'static>(
+    port: u16,
+    handler: Arc<H>,
+) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    let state = ServerState {listener, handler, closed: AtomicBool::new(false)};
+    let state = ServerState {
+        listener,
+        handler,
+        closed: AtomicBool::new(false),
+    };
     let state_for_main = Arc::new(state);
     let state_for_thread = Arc::clone(&state_for_main);
-    let serverhandle = Server {server_state: state_for_main};
+    let serverhandle = Server {
+        server_state: state_for_main,
+    };
     thread::spawn(move || {
         state_for_thread.listen();
     });
@@ -79,13 +90,12 @@ pub fn serve<H: Handler + Send + Sync + 'static>(port: u16, handler: Arc<H>) -> 
 }
 
 /// Handles a specific connection's parsing based on the associated TCP stream.
-/// 
+///
 /// # Errors
-/// 
+///
 /// Throws an `HttpError` if the parsing process fails.
 pub fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
     let request = request_from_reader(&mut stream)?;
-    
     let response = handler.call(&request, &mut stream)?;
     match response {
         Some(response) => {
@@ -94,7 +104,7 @@ pub fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), Http
             write_headers(&mut stream, &mut headers)?;
             stream.write_all(&response.body)?;
             stream.flush()?;
-        },
+        }
         None => {
             stream.flush()?;
         }

@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use crate::http::request::HttpError;
 
 /// A `HashMap` of two strings representing key, value pairs used in HTTP Headers.
-/// 
+///
 /// Hash Maps do not guarantee ordering in Rust. SHOULD be fine as Http Headers / Trailers do not need to be ordered
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Headers(HashMap<String, String>);
 
 impl Headers {
-
     /// Returns a new `HashMap` constructed as a 'Headers' struct
     #[must_use]
     pub fn new() -> Self {
@@ -17,20 +16,20 @@ impl Headers {
     }
 
     /// Inserts a new entry into the Headers struct by passing both key and value
-    /// 
+    ///
     /// # Examples
     /// ```
     /// let mut headers = httpserver::http::headers::Headers::new();
     /// headers.insert("drink", "milk");
     /// ```
-    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>){
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.0.insert(key.into(), value.into());
     }
 
     /// Retrieves the value of a specified key.
-    /// 
+    ///
     /// Returns None if the specified key was not found in the header.
-    /// 
+    ///
     /// # Examples
     /// ```
     /// let mut headers = httpserver::http::headers::Headers::new();
@@ -42,7 +41,7 @@ impl Headers {
     }
 
     /// Appends a key / value pair into the Header.
-    /// 
+    ///
     /// # Examples
     /// ```
     /// let mut headers = httpserver::http::headers::Headers::new();
@@ -68,20 +67,24 @@ impl Headers {
 
     /// Implements an iterator for the Header
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
-        self.0.iter().map(|(key, value)| (key.as_str(), value.as_str()))
+        self.0
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 
     /// Parses passed data from a byte array to a header.
-    /// 
+    ///
     /// Returns the amount of data parsed to handle cases where the array contains incomplete data that should be kept.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an `HttpError` if parsing the header fails.
-    /// 
+    ///
     /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
-    pub fn parse_header<B>(&mut self, data: B) -> Result<(usize, bool),HttpError> where B: AsRef<[u8]> {
-
+    pub fn parse_header<B>(&mut self, data: B) -> Result<(usize, bool), HttpError>
+    where
+        B: AsRef<[u8]>,
+    {
         // size of \r\n fixed as 2
         const CRLF_LEN: usize = 2;
         let string = String::from_utf8_lossy(data.as_ref());
@@ -101,16 +104,17 @@ impl Headers {
         }
 
         if string.find("\r\n").is_some()
-            && let Some((base, _end)) = string.rsplit_once("\r\n") {
-                for line in base.split("\r\n") {
-                    if line.is_empty() {
-                        line_length += CRLF_LEN; //There is still one linebreak left here, the one separating headers from body
-                        return Ok((line_length, true));
-                    }
-                    line_length += line.len() + CRLF_LEN;
-                    self.create_header_from_string(line)?;
+            && let Some((base, _end)) = string.rsplit_once("\r\n")
+        {
+            for line in base.split("\r\n") {
+                if line.is_empty() {
+                    line_length += CRLF_LEN; //There is still one linebreak left here, the one separating headers from body
+                    return Ok((line_length, true));
                 }
-                return Ok((line_length, false));
+                line_length += line.len() + CRLF_LEN;
+                self.create_header_from_string(line)?;
+            }
+            return Ok((line_length, false));
         }
         Ok((0, false))
     }
@@ -130,7 +134,6 @@ impl Headers {
         }
 
         let key_lowercase = key.to_lowercase();
-        
         if self.0.contains_key(&key_lowercase) {
             self.append(key_lowercase, value);
         } else {
@@ -147,9 +150,9 @@ const fn is_valid_char(c: char) -> bool {
         return true;
     }
 
-    matches!(c,
-        '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' |
-        '-' | '.' | '^' | '_' | '`' | '|' | '~'
+    matches!(
+        c,
+        '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '.' | '^' | '_' | '`' | '|' | '~'
     )
 }
 
@@ -271,7 +274,10 @@ mod tests {
         assert!(result.is_ok());
 
         let (size, done) = result.unwrap();
-        assert_eq!(headers.get("host").unwrap(), "localhost:8081, localhost:8080");
+        assert_eq!(
+            headers.get("host").unwrap(),
+            "localhost:8081, localhost:8080"
+        );
         assert_eq!(size, 24);
         assert!(done);
     }

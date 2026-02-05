@@ -1,4 +1,7 @@
-use std::{fmt::{self}, io::{self}};
+use std::{
+    fmt::{self},
+    io::{self},
+};
 
 use crate::{http::headers::Headers, http::request::HttpError};
 
@@ -36,7 +39,6 @@ impl fmt::Display for StatusCode {
 }
 
 impl StatusCode {
-    
     /// Creates the string representation of the passed status code.
     #[must_use]
     pub const fn reason_phrase(&self) -> &str {
@@ -51,24 +53,29 @@ impl StatusCode {
 }
 
 /// Write the status line to the passed writer.
-/// 
+///
 /// Hardcodes HTTP/1.1 due to the limit of the Server to that version.
-/// 
+///
 /// # Errors
-/// 
+///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
-pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode ) -> io::Result<()>{
-    write!(writer, "HTTP/1.1 {} {}\r\n", status_code as u16, status_code.reason_phrase())?;
+pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode) -> io::Result<()> {
+    write!(
+        writer,
+        "HTTP/1.1 {} {}\r\n",
+        status_code as u16,
+        status_code.reason_phrase()
+    )?;
     Ok(())
 }
 
 /// Writes the headers to the passed writer.
-/// 
+///
 /// Given a hashmap of headers, iterates through them and prints the keys and values in HTTP valid format.
 /// Also prints the final linebreak separating headers from the HTTP body.
-/// 
+///
 /// # Errors
-/// 
+///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
 pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::Result<()> {
     for (key, value) in headers.iter() {
@@ -79,14 +86,14 @@ pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::
 }
 
 /// Writes the body in chunks
-/// 
+///
 /// # Output
 /// [Length in Hex]\r\n
-/// 
+///
 /// [Data]\r\n
-/// 
+///
 /// # Errors
-/// 
+///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
 pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<(), HttpError> {
     let hex = format!("{:X}\r\n", data.len());
@@ -98,20 +105,23 @@ pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<()
 }
 
 /// Writes the final part of the body if passed with chunked transfer encoding.
-/// 
+///
 /// This is standardized.
-/// 
+///
 /// # Example
 /// ...
-/// 
+///
 /// 0\r\n
-/// 
+///
 /// \r\n
-/// 
+///
 /// # Errors
-/// 
+///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
-pub fn write_final_body_chunk<W: io::Write>(mut writer: W, trailers: Option<Headers>) -> Result<(), HttpError> {
+pub fn write_final_body_chunk<W: io::Write>(
+    mut writer: W,
+    trailers: Option<Headers>,
+) -> Result<(), HttpError> {
     writer.write_all(b"0\r\n")?;
     match trailers {
         Some(trailers) => {
@@ -123,13 +133,15 @@ pub fn write_final_body_chunk<W: io::Write>(mut writer: W, trailers: Option<Head
 }
 
 /// Identical function to `write_headers`, kept for readability
-/// 
+///
 /// # Errors
-/// 
+///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails
 pub fn write_trailers<W: io::Write>(mut writer: W, headers: &Headers) -> Result<(), HttpError> {
     for (key, value) in headers.iter() {
-        writer.write_all(format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes())?;
+        writer.write_all(
+            format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes(),
+        )?;
     }
     writer.write_all(b"\r\n")?;
     Ok(())
@@ -141,21 +153,31 @@ pub fn html_response(status: StatusCode, html: &str) -> Response {
     let mut headers = Headers::new();
     headers.insert("content-type", "text/html");
     headers.insert("content-length", html.len().to_string());
-    Response { status, headers, body: html.as_bytes().to_vec()}
+    Response {
+        status,
+        headers,
+        body: html.as_bytes().to_vec(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{http::headers::Headers, http::response::{StatusCode, write_chunked_body, write_final_body_chunk, write_headers, write_status_line}};
+    use crate::{
+        http::headers::Headers,
+        http::response::{
+            StatusCode, write_chunked_body, write_final_body_chunk, write_headers,
+            write_status_line,
+        },
+    };
 
     #[test]
     fn reason_phrase_converts_method_to_string() {
         let valid_methods = [
-        (StatusCode::Ok, "OK"),
-        (StatusCode::Created, "Created"),
-        (StatusCode::BadRequest, "Bad Request"), 
-        (StatusCode::NotFound, "Not Found"),
-        (StatusCode::InternalServerError, "Internal Server Error"),
+            (StatusCode::Ok, "OK"),
+            (StatusCode::Created, "Created"),
+            (StatusCode::BadRequest, "Bad Request"),
+            (StatusCode::NotFound, "Not Found"),
+            (StatusCode::InternalServerError, "Internal Server Error"),
         ];
 
         for (method, expected) in valid_methods {
@@ -169,7 +191,7 @@ mod tests {
         let expected = b"HTTP/1.1 200 OK\r\n";
 
         write_status_line(&mut buffer, StatusCode::Ok).unwrap();
-        
+
         assert_eq!(buffer, expected);
     }
 
@@ -181,7 +203,7 @@ mod tests {
         let expected = b"host: localhost:8080\r\n\r\n";
 
         write_headers(&mut buffer, &mut headers).unwrap();
-        
+
         assert_eq!(buffer, expected);
     }
 
@@ -189,8 +211,7 @@ mod tests {
     fn write_chunked_bodies_formats_body() {
         let mut buffer = Vec::new();
         let data = b"Let us see what happens";
-        let expected = 
-        "17\r\n\
+        let expected = "17\r\n\
         Let us see what happens\r\n\
         ";
 
@@ -202,8 +223,7 @@ mod tests {
     #[test]
     fn write_final_body_chunk_formats_ending_without_trailer() {
         let mut buffer = Vec::new();
-        let expected = 
-        "0\r\n\
+        let expected = "0\r\n\
         \r\n\
         ";
 
@@ -217,8 +237,7 @@ mod tests {
         let mut buffer = Vec::new();
         let mut trailers = Headers::new();
         trailers.insert("Server-Timing", "custom-metric;dur=123.4");
-        let expected = 
-        "0\r\n\
+        let expected = "0\r\n\
         server-timing: custom-metric;dur=123.4\r\n\
         \r\n\
         ";
@@ -227,5 +246,4 @@ mod tests {
 
         assert_eq!(buffer, expected.as_bytes());
     }
-
 }

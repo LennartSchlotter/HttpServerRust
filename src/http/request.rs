@@ -2,10 +2,13 @@ use std::io::Read;
 
 use thiserror::Error;
 
-use crate::{http::headers::Headers, http::request_line::{RequestLine, parse_request_line}};
+use crate::{
+    http::headers::Headers,
+    http::request_line::{RequestLine, parse_request_line},
+};
 
 /// Representation of a HTTP request with request line, headers and body
-/// 
+///
 /// Includes a parse state to keep track of the progress of the parsing
 #[derive(Debug)]
 pub struct Request {
@@ -71,7 +74,7 @@ pub enum HttpError {
     #[error("Parsing error: {0}")]
     ParseError(#[from] std::num::ParseIntError),
 
-    /// An internal invariant was violated. 
+    /// An internal invariant was violated.
     /// This is most likely used as a safety net to catch errors that logically should not be able to happen.
     #[error("Internal invariant violated")]
     InternalInvariantViolated,
@@ -82,27 +85,38 @@ pub enum HttpError {
 }
 
 /// Parses the contents of a reader to a Request
-/// 
+///
 /// The reader may be of any type that implements `Read`
-/// 
+///
 /// # Errors
-/// 
+///
 /// Throws a `HttpError` if the request was not valid.
-/// 
+///
 /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
 pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
-    let request_line = RequestLine {method: String::new(), request_target: String::new(), http_version: String::new()};
+    let request_line = RequestLine {
+        method: String::new(),
+        request_target: String::new(),
+        http_version: String::new(),
+    };
     let headers = Headers::new();
     let body = Vec::new();
-    let mut request = Request {parse_state: ParseState::Initialized, request_line, headers, body};
+    let mut request = Request {
+        parse_state: ParseState::Initialized,
+        request_line,
+        headers,
+        body,
+    };
     let mut bytes_read = 0;
 
-    loop{
+    loop {
         match request.parse_state {
             ParseState::Done => return Ok(request),
-            ParseState::Initialized | ParseState::RequestStateParsingHeaders | ParseState::ParseBody => {
+            ParseState::Initialized
+            | ParseState::RequestStateParsingHeaders
+            | ParseState::ParseBody => {
                 let parsed = request.parse(&buffer[..bytes_read])?;
                 if parsed > 0 {
                     buffer.drain(0..parsed);
@@ -127,19 +141,17 @@ pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError
             }
         }
     }
-
 }
 
 impl Request {
-    
     /// Parses passed byte data.
-    /// 
+    ///
     /// Returns the size of the parsed data.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Throws an `HttpError` if the parsing fails.
-    /// 
+    ///
     /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
     pub fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
         let string = String::from_utf8_lossy(data);
@@ -149,14 +161,14 @@ impl Request {
                 let (request_line_result, request_line_size) = parse_request_line(string.as_ref())?;
                 if let Some(request_line) = request_line_result {
                     if request_line.http_version != "1.1" {
-                        return Err(HttpError::UnsupportedVersion(request_line.http_version))
+                        return Err(HttpError::UnsupportedVersion(request_line.http_version));
                     }
                     self.parse_state = ParseState::RequestStateParsingHeaders;
                     self.request_line = request_line;
                 }
                 total_size = request_line_size;
                 Ok(total_size)
-            },
+            }
             ParseState::RequestStateParsingHeaders => {
                 let (header_size, done) = self.headers.parse_header(string.as_bytes())?;
                 total_size += header_size;
@@ -164,7 +176,7 @@ impl Request {
                     self.parse_state = ParseState::ParseBody;
                 }
                 Ok(total_size)
-            },
+            }
             ParseState::ParseBody => {
                 let Some(content) = self.headers.get("content-length") else {
                     self.parse_state = ParseState::Done;
@@ -193,7 +205,7 @@ impl Request {
 
                 self.parse_state = ParseState::Done;
                 Ok(to_take)
-            },
+            }
             ParseState::Done => {
                 if !data.is_empty() {
                     return Err(HttpError::InvalidBodyLength);
@@ -229,7 +241,7 @@ mod tests {
     impl io::Read for ChunkReader<'_> {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             if self.pos >= self.data.len() {
-                return Ok(0)
+                return Ok(0);
             }
 
             let remaining = self.data.len() - self.pos;
@@ -368,7 +380,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn request_with_extra_spaces_should_throw_malformedrequestline() {
         let input = "GET  /  HTTP/1.1\r\n\
@@ -393,7 +404,7 @@ mod tests {
         let mut reader = input.as_bytes();
 
         let result = request_from_reader(&mut reader);
-        
+
         assert!(matches!(result, Err(HttpError::UnexpectedEOF)));
     }
 
@@ -423,12 +434,7 @@ mod tests {
         assert!(matches!(r, Err(HttpError::MalformedHeader)));
     }
 
-
-
-
     ///////////////////////// BODY TESTS /////////////////////////////////////////////////////////
-
-
 
     #[test]
     fn body_valid() {
@@ -438,11 +444,11 @@ mod tests {
                         Content-Length: 12\r\n\
                         \r\n\
                         hello world!";
-        
-        let mut chunk_reader = ChunkReader::new(input,32);
+
+        let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered).unwrap();
-        
+
         assert_eq!(String::from_utf8(r.body).unwrap(), "hello world!");
     }
 
@@ -455,7 +461,7 @@ mod tests {
                         \r\n\
                         hello world!";
 
-        let mut chunk_reader = ChunkReader::new(input,32);
+        let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered);
 
@@ -472,10 +478,10 @@ mod tests {
                         \r\n\
                         ";
 
-        let mut chunk_reader = ChunkReader::new(input,32);
+        let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered);
-        
+
         assert!(r.is_ok());
         let request = r.unwrap();
         assert!(request.body.is_empty());
@@ -489,10 +495,10 @@ mod tests {
                         \r\n\
                         ";
 
-        let mut chunk_reader = ChunkReader::new(input,32);
+        let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered);
-        
+
         assert!(r.is_ok());
         let request = r.unwrap();
         assert!(request.body.is_empty());
@@ -507,10 +513,10 @@ mod tests {
                         \r\n\
                         hello world!";
 
-        let mut chunk_reader = ChunkReader::new(input,30);
+        let mut chunk_reader = ChunkReader::new(input, 30);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered);
-        
+
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::InvalidBodyLength)));
     }
@@ -523,7 +529,7 @@ mod tests {
                         \r\n\
                         hello world!";
 
-        let mut chunk_reader = ChunkReader::new(input,32);
+        let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
         let r = request_from_reader(&mut buffered);
 

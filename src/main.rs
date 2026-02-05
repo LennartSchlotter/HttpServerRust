@@ -1,13 +1,23 @@
 //! # Rust HTTP Server
-//! 
+//!
 //! This binary crate provides a HTTP server implementation built on top of the library in this crate
-//! 
+//!
 //! It supports basic request parsing and response generation.
-//! 
+//!
 //! Refer to the library documentation of reusable components.
+use httpserver::{
+    http::{
+        headers::Headers,
+        request::{HttpError, Request},
+        response::{
+            Response, StatusCode, html_response, write_chunked_body, write_final_body_chunk,
+            write_headers, write_status_line,
+        },
+    },
+    runtime::{handler::Handler, server::serve},
+};
+use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
-use httpserver::{http::{headers::Headers, request::{HttpError, Request}, response::{Response, StatusCode, html_response, write_chunked_body, write_final_body_chunk, write_headers, write_status_line}}, runtime::{handler::Handler, server::serve}};
-use sha2::{Sha256, Digest};
 
 struct MyHandler;
 
@@ -16,20 +26,27 @@ struct MyHandler;
  * To do is still to improve options the server provides to clean this implementation up.
  */
 impl Handler for MyHandler {
-    fn call<W: std::io::Write>(&self, request: &Request, mut stream: &mut W) -> Result<Option<Response>, HttpError> {
-        match request.request_line.request_target.as_str() { //can also match request.request_line.method to differentiate between GET, POST etc
+    fn call<W: std::io::Write>(
+        &self,
+        request: &Request,
+        mut stream: &mut W,
+    ) -> Result<Option<Response>, HttpError> {
+        match request.request_line.request_target.as_str() {
+            //can also match request.request_line.method to differentiate between GET, POST etc
             "/yourproblem" => {
                 let body = "<html><body><h1>Bad Request</h1></body></html>"; //fs::read_to_string("example/400.html")
                 let response = html_response(StatusCode::BadRequest, body);
                 Ok(Some(response))
-            },
+            }
             "/myproblem" => {
                 let body = "<html><body><h1>Internal Server Error</h1></body></html>";
                 let response = html_response(StatusCode::InternalServerError, body);
                 Ok(Some(response))
-            },
+            }
             path if path.starts_with("/httpbin/stream/") => {
-                let suffix = path.strip_prefix("/httpbin/stream/").ok_or(HttpError::InternalInvariantViolated)?;
+                let suffix = path
+                    .strip_prefix("/httpbin/stream/")
+                    .ok_or(HttpError::InternalInvariantViolated)?;
                 let url = "https://httpbin.org/stream/".to_string() + suffix;
 
                 let mut response = reqwest::blocking::get(url)?;
@@ -49,7 +66,7 @@ impl Handler for MyHandler {
                         break;
                     }
 
-                    write_chunked_body(&mut stream,  &buffer[..data])?;
+                    write_chunked_body(&mut stream, &buffer[..data])?;
                     full_body.extend_from_slice(&buffer[..data]); //This is expensive just to compute the hash, could update the hash on each iteration
                 }
                 if headers.get("trailer").is_some() {
@@ -64,14 +81,18 @@ impl Handler for MyHandler {
                     write_final_body_chunk(&mut stream, None)?;
                 }
                 Ok(None)
-            },
+            }
             "/mp4" => {
                 let file = std::fs::read("assets/video.mp4")?;
                 let mut headers = Headers::new();
                 headers.insert("content-type", "video/mp4");
                 headers.insert("content-length", file.len().to_string());
-                Ok(Some(Response { status: StatusCode::Ok, headers, body: file }))
-            },
+                Ok(Some(Response {
+                    status: StatusCode::Ok,
+                    headers,
+                    body: file,
+                }))
+            }
             _ => {
                 let body = "<html><body><h1>All good!</h1></body></html>";
                 let response = html_response(StatusCode::Ok, body);
