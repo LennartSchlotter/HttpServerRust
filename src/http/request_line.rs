@@ -13,7 +13,8 @@ pub struct RequestLine {
 
 /// Parses a passed string into a Request Line Struct
 ///
-/// Returns an Optional Request Line in case the passed string did not contain the entire line
+/// Returns an Optional Request Line in case the passed string did not contain the entire line.
+///
 /// Returns the size of the parsed data to differentiate between unfinished parsing and completion.
 ///
 /// # Errors
