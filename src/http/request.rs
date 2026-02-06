@@ -13,7 +13,7 @@ use crate::{
 #[derive(Debug)]
 pub struct Request {
     /// The state of the parser.
-    pub parse_state: ParseState,
+    parse_state: ParseState,
     /// A custom struct representing the request line.
     pub request_line: RequestLine,
     /// A custom struct representing a list of headers.
@@ -24,7 +24,7 @@ pub struct Request {
 
 /// Represents the different stages of the parser.
 #[derive(Debug, PartialEq, Eq)]
-pub enum ParseState {
+enum ParseState {
     /// The parser was initialized.
     Initialized,
     /// The parser is parsing headers.
@@ -153,7 +153,7 @@ impl Request {
     /// Throws an `HttpError` if the parsing fails.
     ///
     /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
-    pub fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
+    fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
         let string = String::from_utf8_lossy(data);
         let mut total_size = 0;
         match self.parse_state {

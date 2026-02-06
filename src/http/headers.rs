@@ -51,7 +51,7 @@ impl Headers {
     /// assert_eq!(headers.get("drink"), Some("milk, water"));
     /// assert_eq!(headers.get("food"), Some("pizza"));
     /// ```
-    pub fn append(&mut self, key: impl Into<String>, value: impl Into<String>) {
+    fn append(&mut self, key: impl Into<String>, value: impl Into<String>) {
         let key = key.into();
         let value = value.into();
 

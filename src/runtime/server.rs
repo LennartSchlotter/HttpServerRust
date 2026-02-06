@@ -21,7 +21,7 @@ pub struct Server<H: Handler> {
 
 /// A struct representing the state of a server with the associated listener, whether or not the server has been closed and the handler.
 #[derive(Debug)]
-pub struct ServerState<H: Handler> {
+struct ServerState<H: Handler> {
     listener: TcpListener,
     closed: AtomicBool,
     handler: Arc<H>,
@@ -94,7 +94,7 @@ pub fn serve<H: Handler + Send + Sync + 'static>(
 /// # Errors
 ///
 /// Throws an `HttpError` if the parsing process fails.
-pub fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
+fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
     let request = request_from_reader(&mut stream)?;
     let response = handler.call(&request, &mut stream)?;
     match response {

@@ -41,7 +41,7 @@ impl fmt::Display for StatusCode {
 impl StatusCode {
     /// Creates the string representation of the passed status code.
     #[must_use]
-    pub const fn reason_phrase(&self) -> &str {
+    const fn reason_phrase(&self) -> &str {
         match self {
             Self::Ok => "OK",
             Self::Created => "Created",
