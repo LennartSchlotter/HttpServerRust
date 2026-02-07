@@ -15,6 +15,7 @@ thiserror = "1.0"
 reqwest = { version = "0.11", features = ["blocking"] }
 sha2 = "0.10.9"
 hex = "0.4"
+tokio = { version = "1.49", features = ["full"] }
 
 [lints.rust]
 unsafe_code = "forbid"
