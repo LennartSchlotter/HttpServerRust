@@ -1,5 +1,8 @@
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    task::JoinError,
+};
 
 use crate::{
     http::headers::Headers,
@@ -81,6 +84,10 @@ pub enum HttpError {
     /// The request to the server from the proxy failed.
     #[error("upstream request failed: {0}")]
     UpstreamRequestFailed(#[from] reqwest::Error),
+
+    /// A blocking task failed ot complete.
+    #[error("Blocking task failed: {0}")]
+    TaskJoin(#[from] JoinError),
 }
 
 /// Parses the contents of a reader to a Request

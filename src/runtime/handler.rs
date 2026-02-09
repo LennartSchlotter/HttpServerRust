@@ -6,7 +6,7 @@ use crate::http::{
 };
 
 /// A trait that determines the handling for each server.
-pub trait Handler {
+pub trait Handler: Send + Sync {
     /// Determines what happens to a given request.
     ///
     /// # Errors

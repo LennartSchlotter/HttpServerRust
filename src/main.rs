@@ -110,7 +110,6 @@ async fn main() -> Result<(), HttpError> {
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf)
     })
-    .await
-    .unwrap()?;
+    .await??;
     Ok(())
 }
