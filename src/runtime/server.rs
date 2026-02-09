@@ -1,13 +1,12 @@
 use std::{
-    io::{Error, Write},
-    net::{TcpListener, TcpStream},
+    io::Error,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
     time::Duration,
 };
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
 
 use crate::http::request::{HttpError, request_from_reader};
 use crate::http::response::{write_headers, write_status_line};
@@ -36,17 +35,17 @@ impl<H: Handler> Server<H> {
 
 impl<H: Handler + Send + Sync + 'static> ServerState<H> {
     /// Called on a `ServerState`, listening for connections.
-    pub fn listen(self: Arc<Self>) {
+    pub async fn listen(self: Arc<Self>) {
         loop {
             if self.closed.load(Ordering::SeqCst) {
                 println!("We cannot take any new connections so stop");
                 return;
             }
-            match self.listener.accept() {
+            match self.listener.accept().await {
                 Ok((stream, _)) => {
                     let handler_clone = Arc::clone(&self.handler);
-                    thread::spawn(move || {
-                        if let Err(e) = handle(stream, &*handler_clone) {
+                    tokio::spawn(async move {
+                        if let Err(e) = handle(stream, &*handler_clone).await {
                             eprintln!("Encountered error handling the stream: {e}");
                         }
                     });
@@ -56,7 +55,7 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                         break;
                     }
                     eprintln!("Encountered error accepting connection: {error:}");
-                    thread::sleep(Duration::from_millis(50));
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
         }
@@ -68,11 +67,11 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
 /// # Errors
 ///
 /// Throws an Error if binding the tcp listener fails.
-pub fn serve<H: Handler + Send + Sync + 'static>(
+pub async fn serve<H: Handler + Send + Sync + 'static>(
     port: u16,
     handler: Arc<H>,
 ) -> Result<Server<H>, Error> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let state = ServerState {
         listener,
         handler,
@@ -83,9 +82,7 @@ pub fn serve<H: Handler + Send + Sync + 'static>(
     let serverhandle = Server {
         server_state: state_for_main,
     };
-    thread::spawn(move || {
-        state_for_thread.listen();
-    });
+    tokio::spawn(async move {state_for_thread.listen().await;});
     Ok(serverhandle)
 }
 
@@ -94,19 +91,19 @@ pub fn serve<H: Handler + Send + Sync + 'static>(
 /// # Errors
 ///
 /// Throws an `HttpError` if the parsing process fails.
-fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
-    let request = request_from_reader(&mut stream)?;
-    let response = handler.call(&request, &mut stream)?;
+async fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
+    let request = request_from_reader(&mut stream).await?;
+    let response = handler.call(&request, &mut stream).await?;
     match response {
         Some(response) => {
-            write_status_line(&mut stream, response.status)?;
+            write_status_line(&mut stream, response.status).await?;
             let mut headers = response.headers;
-            write_headers(&mut stream, &mut headers)?;
-            stream.write_all(&response.body)?;
-            stream.flush()?;
+            write_headers(&mut stream, &mut headers).await?;
+            stream.write_all(&response.body).await?;
+            stream.flush().await?;
         }
         None => {
-            stream.flush()?;
+            stream.flush().await?;
         }
     }
     Ok(())
