@@ -61,8 +61,15 @@ impl StatusCode {
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
-pub async fn write_status_line<W: AsyncWrite + Unpin>(mut writer: W, status_code: StatusCode) -> io::Result<()> {
-    let line = format!("HTTP/1.1 {} {}\r\n", status_code as u16, status_code.reason_phrase());
+pub async fn write_status_line<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    status_code: StatusCode,
+) -> io::Result<()> {
+    let line = format!(
+        "HTTP/1.1 {} {}\r\n",
+        status_code as u16,
+        status_code.reason_phrase()
+    );
     writer.write_all(line.as_bytes()).await?;
     writer.flush().await?;
     Ok(())
@@ -76,7 +83,10 @@ pub async fn write_status_line<W: AsyncWrite + Unpin>(mut writer: W, status_code
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
-pub async fn write_headers<W: AsyncWrite + Unpin>(mut writer: W, headers: &mut Headers) -> io::Result<()> {
+pub async fn write_headers<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    headers: &mut Headers,
+) -> io::Result<()> {
     for (key, value) in headers.iter() {
         let line = format!("{key}: {value}\r\n");
         writer.write_all(line.as_bytes()).await?;
@@ -96,7 +106,10 @@ pub async fn write_headers<W: AsyncWrite + Unpin>(mut writer: W, headers: &mut H
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
-pub async fn write_chunked_body<W: AsyncWrite + Unpin>(mut writer: W, data: &[u8]) -> Result<(), HttpError> {
+pub async fn write_chunked_body<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    data: &[u8],
+) -> Result<(), HttpError> {
     let hex = format!("{:X}\r\n", data.len());
     writer.write_all(hex.as_bytes()).await?;
 
@@ -138,11 +151,14 @@ pub async fn write_final_body_chunk<W: AsyncWrite + Unpin>(
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails
-pub async fn write_trailers<W: AsyncWrite + Unpin>(mut writer: W, headers: &Headers) -> Result<(), HttpError> {
+pub async fn write_trailers<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    headers: &Headers,
+) -> Result<(), HttpError> {
     for (key, value) in headers.iter() {
-        writer.write_all(
-            format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes(),
-        ).await?;
+        writer
+            .write_all(format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes())
+            .await?;
     }
     writer.write_all(b"\r\n").await?;
     Ok(())
@@ -191,7 +207,9 @@ mod tests {
         let mut buffer = Vec::new();
         let expected = b"HTTP/1.1 200 OK\r\n";
 
-        write_status_line(&mut buffer, StatusCode::Ok).await.unwrap();
+        write_status_line(&mut buffer, StatusCode::Ok)
+            .await
+            .unwrap();
 
         assert_eq!(buffer, expected);
     }
@@ -243,7 +261,9 @@ mod tests {
         \r\n\
         ";
 
-        write_final_body_chunk(&mut buffer, Some(trailers)).await.unwrap();
+        write_final_body_chunk(&mut buffer, Some(trailers))
+            .await
+            .unwrap();
 
         assert_eq!(buffer, expected.as_bytes());
     }

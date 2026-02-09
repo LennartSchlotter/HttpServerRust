@@ -1,6 +1,9 @@
 use tokio::io::AsyncWrite;
 
-use crate::http::{request::{HttpError, Request}, response::Response};
+use crate::http::{
+    request::{HttpError, Request},
+    response::Response,
+};
 
 /// A trait that determines the handling for each server.
 pub trait Handler {
@@ -8,5 +11,9 @@ pub trait Handler {
     ///
     /// # Errors
     /// Throws an `HttpError` if processing the request fails.
-    fn call<W: AsyncWrite + Unpin + Send>(&self, req: &Request, stream: W) -> impl Future<Output = Result<Option<Response>, HttpError>> + Send;
+    fn call<W: AsyncWrite + Unpin + Send>(
+        &self,
+        req: &Request,
+        stream: W,
+    ) -> impl Future<Output = Result<Option<Response>, HttpError>> + Send;
 }

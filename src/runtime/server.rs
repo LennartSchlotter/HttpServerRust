@@ -6,7 +6,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+};
 
 use crate::http::request::{HttpError, request_from_reader};
 use crate::http::response::{write_headers, write_status_line};
@@ -82,7 +85,9 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
     let serverhandle = Server {
         server_state: state_for_main,
     };
-    tokio::spawn(async move {state_for_thread.listen().await;});
+    tokio::spawn(async move {
+        state_for_thread.listen().await;
+    });
     Ok(serverhandle)
 }
 

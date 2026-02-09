@@ -109,6 +109,8 @@ async fn main() -> Result<(), HttpError> {
     tokio::task::spawn_blocking(|| {
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf)
-    }).await.unwrap()?;
+    })
+    .await
+    .unwrap()?;
     Ok(())
 }

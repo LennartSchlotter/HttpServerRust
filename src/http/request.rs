@@ -92,7 +92,9 @@ pub enum HttpError {
 /// Throws a `HttpError` if the request was not valid.
 ///
 /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
-pub async fn request_from_reader<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Request, HttpError> {
+pub async fn request_from_reader<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Request, HttpError> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
     let request_line = RequestLine {
@@ -217,7 +219,10 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use std::{pin::Pin, task::{Context, Poll}};
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
 
     use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
 
@@ -240,7 +245,11 @@ mod tests {
     }
 
     impl AsyncRead for ChunkReader<'_> {
-        fn poll_read(mut self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
             if self.pos >= self.data.len() {
                 return Poll::Ready(Ok(()));
             }
