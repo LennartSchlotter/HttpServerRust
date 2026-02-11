@@ -29,8 +29,12 @@ pub enum StatusCode {
     BadRequest = 400,
     /// Represents the request target not being found as a valid endpoint
     NotFound = 404,
+    /// Represents the client taking too long to send the complete request.
+    RequestTimeout = 408,
     /// Represents an internal error of the server
     InternalServerError = 500,
+    /// Represents the server taking too long to respond to the request
+    GatewayTimeout = 504,
 }
 
 /// Implements Display for the Status Code to enable formatting the Codes as integer values.
@@ -49,7 +53,9 @@ impl StatusCode {
             Self::Created => "Created",
             Self::BadRequest => "Bad Request",
             Self::NotFound => "Not Found",
+            Self::RequestTimeout => "Request Timeout",
             Self::InternalServerError => "Internal Server Error",
+            Self::GatewayTimeout => "Gateway Timeout",
         }
     }
 }
