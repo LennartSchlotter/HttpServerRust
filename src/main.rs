@@ -17,8 +17,8 @@ use httpserver::{
     runtime::{handler::Handler, server::serve},
 };
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWrite;
 use std::sync::Arc;
+use tokio::io::AsyncWrite;
 
 struct MyHandler;
 

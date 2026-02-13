@@ -31,7 +31,6 @@ The code features at times extensive in-line comments to document issues, lesson
 ## Expansion (Version 2) => Performance
 - Concurrency Model Change (Tokio Async)
 - `keep-alive` header
-- HTTP pipelining
 
 ## Expansion (Version 3) => Security
 - Request Timeout
@@ -43,3 +42,4 @@ The code features at times extensive in-line comments to document issues, lesson
 - Structure the routing with a simple router
 
 ## How could this be advanced further?
+- HTTP Pipelining

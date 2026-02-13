@@ -3,7 +3,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
-    task::JoinError, time::timeout,
+    task::JoinError,
+    time::timeout,
 };
 
 use crate::{
@@ -92,7 +93,7 @@ pub enum HttpError {
     TaskJoin(#[from] JoinError),
 
     /// The request timed out
-    /// This can happen both due to the request arriving too slowly (fault of the client) and the response taking too long to arrive (fault of the server) 
+    /// This can happen both due to the request arriving too slowly (fault of the client) and the response taking too long to arrive (fault of the server)
     #[error("Timed out")]
     Timeout,
 }
@@ -109,6 +110,7 @@ pub enum HttpError {
 pub async fn request_from_reader<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<Request, HttpError> {
+    const READ_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
     let request_line = RequestLine {
@@ -125,7 +127,6 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
         body,
     };
     let mut bytes_read = 0;
-    const READ_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     loop {
         let result = timeout(READ_REQUEST_TIMEOUT, async {
@@ -138,7 +139,7 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
                     if parsed > 0 {
                         buffer.drain(0..parsed);
                         bytes_read -= parsed;
-                        return Ok(false)
+                        return Ok(false);
                     }
 
                     if matches!(request.parse_state, ParseState::Done) {
@@ -156,16 +157,17 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
                     buffer.extend_from_slice(&temp[0..read]);
                     bytes_read += read;
                 }
-            };
+            }
             Ok(false)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(true)) => return Ok(request),
-            Ok(Ok(false)) => continue,
+            Ok(Ok(false)) => {}
             Err(_) => return Err(HttpError::Timeout),
             Ok(Err(e)) => return Err(e),
-        };
+        }
     }
 }
 
@@ -245,11 +247,13 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use std::{
-        pin::Pin, task::{Context, Poll}, time::Duration
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
     };
 
-    use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
     use tokio::io::AsyncWriteExt;
+    use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
 
     use crate::http::request::{HttpError, request_from_reader};
 
@@ -475,7 +479,7 @@ mod tests {
         assert!(matches!(r, Err(HttpError::MalformedHeader)));
     }
 
-    /// This test is a little contrived. It simulates the client never closing the connection through a lack of client_write.drop()
+    /// This test is a little contrived. It simulates the client never closing the connection through a lack of `client_write.drop()`
     #[tokio::test]
     async fn server_times_out_when_request_read_too_long() {
         tokio::time::pause();
@@ -488,7 +492,7 @@ mod tests {
                 Host: localhost:8080\r\n\
                 Content-Length: 100000\r\n\
                 \r\n";
-        
+
         client_write.write_all(headers.as_bytes()).await.unwrap();
         client_write.write_all(b"abcd").await.unwrap();
         client_write.flush().await.unwrap();
@@ -496,16 +500,8 @@ mod tests {
         tokio::time::advance(Duration::from_millis(200)).await;
         tokio::time::advance(Duration::from_secs(31)).await; //TODO 
 
-        let result = request_from_reader(&mut buffered).await;
-
-        match result {
-            Ok(_) => {
-                panic!("Parsing succeeded even though timeout should have occured");
-            },
-            Err(e) => {
-                assert!(matches!(e, HttpError::Timeout));
-            },
-        }
+        let result = request_from_reader(&mut buffered).await.unwrap_err();
+        assert!(matches!(result, HttpError::Timeout));
     }
 
     ///////////////////////// BODY TESTS /////////////////////////////////////////////////////////
