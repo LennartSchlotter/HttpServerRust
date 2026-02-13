@@ -1,7 +1,9 @@
+use std::time::Duration;
+
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
-    task::JoinError,
+    task::JoinError, time::timeout,
 };
 
 use crate::{
@@ -88,6 +90,11 @@ pub enum HttpError {
     /// A blocking task failed ot complete.
     #[error("Blocking task failed: {0}")]
     TaskJoin(#[from] JoinError),
+
+    /// The request timed out
+    /// This can happen both due to the request arriving too slowly (fault of the client) and the response taking too long to arrive (fault of the server) 
+    #[error("Timed out")]
+    Timeout,
 }
 
 /// Parses the contents of a reader to a Request
@@ -118,36 +125,47 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
         body,
     };
     let mut bytes_read = 0;
+    const READ_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     loop {
-        match request.parse_state {
-            ParseState::Done => return Ok(request),
-            ParseState::Initialized
-            | ParseState::RequestStateParsingHeaders
-            | ParseState::ParseBody => {
-                let parsed = request.parse(&buffer[..bytes_read])?;
-                if parsed > 0 {
-                    buffer.drain(0..parsed);
-                    bytes_read -= parsed;
-                    continue;
-                }
-
-                if matches!(request.parse_state, ParseState::Done) {
-                    return Ok(request);
-                }
-
-                let read = reader.read(&mut temp[0..]).await?;
-                if read == 0 {
-                    if matches!(request.parse_state, ParseState::Done) {
-                        return Ok(request);
+        let result = timeout(READ_REQUEST_TIMEOUT, async {
+            match request.parse_state {
+                ParseState::Done => return Ok(true),
+                ParseState::Initialized
+                | ParseState::RequestStateParsingHeaders
+                | ParseState::ParseBody => {
+                    let parsed = request.parse(&buffer[..bytes_read])?;
+                    if parsed > 0 {
+                        buffer.drain(0..parsed);
+                        bytes_read -= parsed;
+                        return Ok(false)
                     }
-                    return Err(HttpError::UnexpectedEOF);
-                }
 
-                buffer.extend_from_slice(&temp[0..read]);
-                bytes_read += read;
-            }
-        }
+                    if matches!(request.parse_state, ParseState::Done) {
+                        return Ok(true);
+                    }
+
+                    let read = reader.read(&mut temp[0..]).await?;
+                    if read == 0 {
+                        if matches!(request.parse_state, ParseState::Done) {
+                            return Ok(true);
+                        }
+                        return Err(HttpError::UnexpectedEOF);
+                    }
+
+                    buffer.extend_from_slice(&temp[0..read]);
+                    bytes_read += read;
+                }
+            };
+            Ok(false)
+        }).await;
+
+        match result {
+            Ok(Ok(true)) => return Ok(request),
+            Ok(Ok(false)) => continue,
+            Err(_) => return Err(HttpError::Timeout),
+            Ok(Err(e)) => return Err(e),
+        };
     }
 }
 
@@ -227,11 +245,11 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use std::{
-        pin::Pin,
-        task::{Context, Poll},
+        pin::Pin, task::{Context, Poll}, time::Duration
     };
 
     use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
+    use tokio::io::AsyncWriteExt;
 
     use crate::http::request::{HttpError, request_from_reader};
 
@@ -455,6 +473,39 @@ mod tests {
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::MalformedHeader)));
+    }
+
+    /// This test is a little contrived. It simulates the client never closing the connection through a lack of client_write.drop()
+    #[tokio::test]
+    async fn server_times_out_when_request_read_too_long() {
+        tokio::time::pause();
+
+        let (server_read, mut client_write) = io::duplex(4096);
+        let mut buffered = BufReader::new(server_read);
+
+        let headers = "\
+                POST /st HTTP/1.1\r\n\
+                Host: localhost:8080\r\n\
+                Content-Length: 100000\r\n\
+                \r\n";
+        
+        client_write.write_all(headers.as_bytes()).await.unwrap();
+        client_write.write_all(b"abcd").await.unwrap();
+        client_write.flush().await.unwrap();
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::time::advance(Duration::from_secs(31)).await; //TODO 
+
+        let result = request_from_reader(&mut buffered).await;
+
+        match result {
+            Ok(_) => {
+                panic!("Parsing succeeded even though timeout should have occured");
+            },
+            Err(e) => {
+                assert!(matches!(e, HttpError::Timeout));
+            },
+        }
     }
 
     ///////////////////////// BODY TESTS /////////////////////////////////////////////////////////

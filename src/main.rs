@@ -17,8 +17,8 @@ use httpserver::{
     runtime::{handler::Handler, server::serve},
 };
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWrite;
 use std::sync::Arc;
-use tokio::{self, io::AsyncWrite};
 
 struct MyHandler;
 
@@ -99,7 +99,6 @@ impl Handler for MyHandler {
     }
 }
 
-//#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 #[tokio::main]
 async fn main() -> Result<(), HttpError> {
     const PORT: u16 = 8080;
