@@ -19,7 +19,7 @@ The code features at times extensive in-line comments to document issues, lesson
 
 ### Mistakes made
 
-### Fundamental Concept learned / applied
+### Fundamental Concepts learned / applied
 - Network Programming
     - Protocols
         - HTTP/1.1, TCP, UDP
@@ -29,10 +29,12 @@ The code features at times extensive in-line comments to document issues, lesson
     - Standard Library, Ownership
 
 ## Expansion (Version 2) => Performance
-- Concurrency Model Change (Thread Pool / Async)
-- Scheduling, Connection Limits, Request Timeouts
+- Concurrency Model Change (Tokio Async)
+- `keep-alive` header
+- HTTP pipelining
 
 ## Expansion (Version 3) => Security
+- Request Timeout
 - Request Size Limit
 - Header Validation
 - HTTP (TLS / SSL)
