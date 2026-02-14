@@ -385,9 +385,7 @@ mod tests {
 
         // Heuristic assumption: if requests WERE processed sequentially, the time would be roughly equal to the amount * time for one
         // With concurrency it should be significantly slower, at least roughly the duration of the slowest handler
-        println!(
-            "Completed {CONCURRENT_REQUESTS} requests in {elapsed:?}"
-        );
+        println!("Completed {CONCURRENT_REQUESTS} requests in {elapsed:?}");
         assert!(elapsed < Duration::from_secs(1));
 
         server.close();
