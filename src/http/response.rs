@@ -3,6 +3,8 @@ use std::{
     io::{self},
 };
 
+use tokio::io::{AsyncWrite, AsyncWriteExt};
+
 use crate::{http::headers::Headers, http::request::HttpError};
 
 /// Representation of a HTTP response with status code, headers and body
@@ -27,8 +29,12 @@ pub enum StatusCode {
     BadRequest = 400,
     /// Represents the request target not being found as a valid endpoint
     NotFound = 404,
+    /// Represents the client taking too long to send the complete request.
+    RequestTimeout = 408,
     /// Represents an internal error of the server
     InternalServerError = 500,
+    /// Represents the server taking too long to respond to the request
+    GatewayTimeout = 504,
 }
 
 /// Implements Display for the Status Code to enable formatting the Codes as integer values.
@@ -47,7 +53,9 @@ impl StatusCode {
             Self::Created => "Created",
             Self::BadRequest => "Bad Request",
             Self::NotFound => "Not Found",
+            Self::RequestTimeout => "Request Timeout",
             Self::InternalServerError => "Internal Server Error",
+            Self::GatewayTimeout => "Gateway Timeout",
         }
     }
 }
@@ -59,13 +67,17 @@ impl StatusCode {
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
-pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode) -> io::Result<()> {
-    write!(
-        writer,
+pub async fn write_status_line<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    status_code: StatusCode,
+) -> io::Result<()> {
+    let line = format!(
         "HTTP/1.1 {} {}\r\n",
         status_code as u16,
         status_code.reason_phrase()
-    )?;
+    );
+    writer.write_all(line.as_bytes()).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -77,11 +89,16 @@ pub fn write_status_line<W: io::Write>(mut writer: W, status_code: StatusCode) -
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if the underlying writer fails to write the entire buffer.
-pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::Result<()> {
+pub async fn write_headers<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    headers: &mut Headers,
+) -> io::Result<()> {
     for (key, value) in headers.iter() {
-        writer.write_all(format!("{key}: {value}\r\n").as_bytes())?;
+        let line = format!("{key}: {value}\r\n");
+        writer.write_all(line.as_bytes()).await?;
+        writer.flush().await?;
     }
-    writer.write_all(b"\r\n")?;
+    writer.write_all(b"\r\n").await?;
     Ok(())
 }
 
@@ -95,12 +112,15 @@ pub fn write_headers<W: io::Write>(mut writer: W, headers: &mut Headers) -> io::
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
-pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<(), HttpError> {
+pub async fn write_chunked_body<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    data: &[u8],
+) -> Result<(), HttpError> {
     let hex = format!("{:X}\r\n", data.len());
-    writer.write_all(hex.as_bytes())?;
+    writer.write_all(hex.as_bytes()).await?;
 
-    writer.write_all(data)?;
-    writer.write_all(b"\r\n")?;
+    writer.write_all(data).await?;
+    writer.write_all(b"\r\n").await?;
     Ok(())
 }
 
@@ -118,16 +138,16 @@ pub fn write_chunked_body<W: io::Write>(mut writer: W, data: &[u8]) -> Result<()
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails.
-pub fn write_final_body_chunk<W: io::Write>(
+pub async fn write_final_body_chunk<W: AsyncWrite + Unpin>(
     mut writer: W,
     trailers: Option<Headers>,
 ) -> Result<(), HttpError> {
-    writer.write_all(b"0\r\n")?;
+    writer.write_all(b"0\r\n").await?;
     match trailers {
         Some(trailers) => {
-            write_trailers(&mut writer, &trailers)?;
+            write_trailers(&mut writer, &trailers).await?;
         }
-        None => writer.write_all(b"\r\n")?,
+        None => writer.write_all(b"\r\n").await?,
     }
     Ok(())
 }
@@ -137,13 +157,16 @@ pub fn write_final_body_chunk<W: io::Write>(
 /// # Errors
 ///
 /// This function will return an `HttpError::Io` if any write operation to the underlying writer fails
-pub fn write_trailers<W: io::Write>(mut writer: W, headers: &Headers) -> Result<(), HttpError> {
+pub async fn write_trailers<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    headers: &Headers,
+) -> Result<(), HttpError> {
     for (key, value) in headers.iter() {
-        writer.write_all(
-            format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes(),
-        )?;
+        writer
+            .write_all(format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes())
+            .await?;
     }
-    writer.write_all(b"\r\n")?;
+    writer.write_all(b"\r\n").await?;
     Ok(())
 }
 
@@ -185,55 +208,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_status_line_produces_correct_http_line() {
+    #[tokio::test]
+    async fn write_status_line_produces_correct_http_line() {
         let mut buffer = Vec::new();
         let expected = b"HTTP/1.1 200 OK\r\n";
 
-        write_status_line(&mut buffer, StatusCode::Ok).unwrap();
+        write_status_line(&mut buffer, StatusCode::Ok)
+            .await
+            .unwrap();
 
         assert_eq!(buffer, expected);
     }
 
-    #[test]
-    fn write_headers_produces_correct_headers() {
+    #[tokio::test]
+    async fn write_headers_produces_correct_headers() {
         let mut buffer = Vec::new();
         let mut headers = Headers::new();
         headers.insert("host", "localhost:8080");
         let expected = b"host: localhost:8080\r\n\r\n";
 
-        write_headers(&mut buffer, &mut headers).unwrap();
+        write_headers(&mut buffer, &mut headers).await.unwrap();
 
         assert_eq!(buffer, expected);
     }
 
-    #[test]
-    fn write_chunked_bodies_formats_body() {
+    #[tokio::test]
+    async fn write_chunked_bodies_formats_body() {
         let mut buffer = Vec::new();
         let data = b"Let us see what happens";
         let expected = "17\r\n\
         Let us see what happens\r\n\
         ";
 
-        write_chunked_body(&mut buffer, data).unwrap();
+        write_chunked_body(&mut buffer, data).await.unwrap();
 
         assert_eq!(buffer, expected.as_bytes());
     }
 
-    #[test]
-    fn write_final_body_chunk_formats_ending_without_trailer() {
+    #[tokio::test]
+    async fn write_final_body_chunk_formats_ending_without_trailer() {
         let mut buffer = Vec::new();
         let expected = "0\r\n\
         \r\n\
         ";
 
-        write_final_body_chunk(&mut buffer, None).unwrap();
+        write_final_body_chunk(&mut buffer, None).await.unwrap();
 
         assert_eq!(buffer, expected.as_bytes());
     }
 
-    #[test]
-    fn write_final_body_chunk_formats_ending_with_trailer() {
+    #[tokio::test]
+    async fn write_final_body_chunk_formats_ending_with_trailer() {
         let mut buffer = Vec::new();
         let mut trailers = Headers::new();
         trailers.insert("Server-Timing", "custom-metric;dur=123.4");
@@ -242,7 +267,9 @@ mod tests {
         \r\n\
         ";
 
-        write_final_body_chunk(&mut buffer, Some(trailers)).unwrap();
+        write_final_body_chunk(&mut buffer, Some(trailers))
+            .await
+            .unwrap();
 
         assert_eq!(buffer, expected.as_bytes());
     }

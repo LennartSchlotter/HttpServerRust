@@ -1,6 +1,11 @@
-use std::io::Read;
+use std::time::Duration;
 
 use thiserror::Error;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    task::JoinError,
+    time::timeout,
+};
 
 use crate::{
     http::headers::Headers,
@@ -82,6 +87,15 @@ pub enum HttpError {
     /// The request to the server from the proxy failed.
     #[error("upstream request failed: {0}")]
     UpstreamRequestFailed(#[from] reqwest::Error),
+
+    /// A blocking task failed ot complete.
+    #[error("Blocking task failed: {0}")]
+    TaskJoin(#[from] JoinError),
+
+    /// The request timed out
+    /// This can happen both due to the request arriving too slowly (fault of the client) and the response taking too long to arrive (fault of the server)
+    #[error("Timed out")]
+    Timeout,
 }
 
 /// Parses the contents of a reader to a Request
@@ -93,7 +107,10 @@ pub enum HttpError {
 /// Throws a `HttpError` if the request was not valid.
 ///
 /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
-pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError> {
+pub async fn request_from_reader<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Request, HttpError> {
+    const READ_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
     let request_line = RequestLine {
@@ -112,33 +129,44 @@ pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, HttpError
     let mut bytes_read = 0;
 
     loop {
-        match request.parse_state {
-            ParseState::Done => return Ok(request),
-            ParseState::Initialized
-            | ParseState::RequestStateParsingHeaders
-            | ParseState::ParseBody => {
-                let parsed = request.parse(&buffer[..bytes_read])?;
-                if parsed > 0 {
-                    buffer.drain(0..parsed);
-                    bytes_read -= parsed;
-                    continue;
-                }
-
-                if matches!(request.parse_state, ParseState::Done) {
-                    return Ok(request);
-                }
-
-                let read = reader.read(&mut temp[0..])?;
-                if read == 0 {
-                    if matches!(request.parse_state, ParseState::Done) {
-                        return Ok(request);
+        let result = timeout(READ_REQUEST_TIMEOUT, async {
+            match request.parse_state {
+                ParseState::Done => return Ok(true),
+                ParseState::Initialized
+                | ParseState::RequestStateParsingHeaders
+                | ParseState::ParseBody => {
+                    let parsed = request.parse(&buffer[..bytes_read])?;
+                    if parsed > 0 {
+                        buffer.drain(0..parsed);
+                        bytes_read -= parsed;
+                        return Ok(false);
                     }
-                    return Err(HttpError::UnexpectedEOF);
-                }
 
-                buffer.extend_from_slice(&temp[0..read]);
-                bytes_read += read;
+                    if matches!(request.parse_state, ParseState::Done) {
+                        return Ok(true);
+                    }
+
+                    let read = reader.read(&mut temp[0..]).await?;
+                    if read == 0 {
+                        if matches!(request.parse_state, ParseState::Done) {
+                            return Ok(true);
+                        }
+                        return Err(HttpError::UnexpectedEOF);
+                    }
+
+                    buffer.extend_from_slice(&temp[0..read]);
+                    bytes_read += read;
+                }
             }
+            Ok(false)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(true)) => return Ok(request),
+            Ok(Ok(false)) => {}
+            Err(_) => return Err(HttpError::Timeout),
+            Ok(Err(e)) => return Err(e),
         }
     }
 }
@@ -218,12 +246,19 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, BufReader};
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use tokio::io::AsyncWriteExt;
+    use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
 
     use crate::http::request::{HttpError, request_from_reader};
 
     pub struct ChunkReader<'a> {
-        data: &'a str,
+        data: &'a [u8],
         num_bytes_per_read: usize,
         pos: usize,
     }
@@ -231,32 +266,42 @@ mod tests {
     impl<'a> ChunkReader<'a> {
         pub fn new(data: &'a str, num_bytes_per_read: usize) -> Self {
             Self {
-                data,
+                data: data.as_bytes(),
                 num_bytes_per_read: num_bytes_per_read.max(1),
                 pos: 0,
             }
         }
     }
 
-    impl io::Read for ChunkReader<'_> {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+    impl AsyncRead for ChunkReader<'_> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
             if self.pos >= self.data.len() {
-                return Ok(0);
+                return Poll::Ready(Ok(()));
             }
 
             let remaining = self.data.len() - self.pos;
-            let to_read = remaining.min(self.num_bytes_per_read).min(buffer.len());
+            let max_take = self.num_bytes_per_read.min(remaining);
+            let max_take = max_take.min(buf.remaining());
 
-            let src = self.data.as_bytes();
-            buffer[..to_read].copy_from_slice(&src[self.pos..self.pos + to_read]);
-            self.pos += to_read;
+            if max_take == 0 {
+                return Poll::Ready(Ok(()));
+            }
 
-            Ok(to_read)
+            let chunk = &self.data[self.pos..self.pos + max_take];
+            buf.put_slice(chunk);
+
+            self.pos += max_take;
+
+            Poll::Ready(Ok(()))
         }
     }
 
-    #[test]
-    fn get_request_line_valid() {
+    #[tokio::test]
+    async fn get_request_line_valid() {
         let input = "GET / HTTP/1.1\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -264,15 +309,15 @@ mod tests {
              \r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).unwrap();
+        let r = request_from_reader(&mut buffered).await.unwrap();
 
         assert_eq!(r.request_line.method, "GET");
         assert_eq!(r.request_line.request_target, "/");
         assert_eq!(r.request_line.http_version, "1.1");
     }
 
-    #[test]
-    fn get_request_line_with_path_valid() {
+    #[tokio::test]
+    async fn get_request_line_with_path_valid() {
         let input = "GET /coffee HTTP/1.1\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -281,15 +326,15 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, input.len());
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).unwrap();
+        let r = request_from_reader(&mut buffered).await.unwrap();
 
         assert_eq!(r.request_line.method, "GET");
         assert_eq!(r.request_line.request_target, "/coffee");
         assert_eq!(r.request_line.http_version, "1.1");
     }
 
-    #[test]
-    fn post_request_with_path_valid() {
+    #[tokio::test]
+    async fn post_request_with_path_valid() {
         let input = "POST /coffee HTTP/1.1\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -301,15 +346,15 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 500);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).unwrap();
+        let r = request_from_reader(&mut buffered).await.unwrap();
 
         assert_eq!(r.request_line.method, "POST");
         assert_eq!(r.request_line.request_target, "/coffee");
         assert_eq!(r.request_line.http_version, "1.1");
     }
 
-    #[test]
-    fn invalid_number_of_requestline_parts_should_throw_malformedrequestline() {
+    #[tokio::test]
+    async fn invalid_number_of_requestline_parts_should_throw_malformedrequestline() {
         let input = "/coffee HTTP/1.1\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -318,7 +363,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 1);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered);
+        let result = request_from_reader(&mut buffered).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -326,8 +371,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn invalid_http_version_should_throw_unsupportedversion() {
+    #[tokio::test]
+    async fn invalid_http_version_should_throw_unsupportedversion() {
         let input = "GET / HTTP/1.2\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -336,7 +381,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 8);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered);
+        let result = request_from_reader(&mut buffered).await;
 
         assert!(
             matches!(result, Err(HttpError::UnsupportedVersion(_))),
@@ -344,8 +389,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn invalid_request_line_order_should_throw_malformedrequestline() {
+    #[tokio::test]
+    async fn invalid_request_line_order_should_throw_malformedrequestline() {
         let input = "HTTP/1.1 / GET\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -354,7 +399,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered);
+        let result = request_from_reader(&mut buffered).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -362,8 +407,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn invalid_http_method_should_throw_invalidmethod() {
+    #[tokio::test]
+    async fn invalid_http_method_should_throw_invalidmethod() {
         let input = "STOPS / HTTP/1.1\r\n\
              Host: localhost:8080\r\n\
              User-Agent: curl/7.81.0\r\n\
@@ -372,7 +417,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered);
+        let result = request_from_reader(&mut buffered).await;
 
         assert!(
             matches!(result, Err(HttpError::InvalidMethod(_))),
@@ -380,8 +425,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn request_with_extra_spaces_should_throw_malformedrequestline() {
+    #[tokio::test]
+    async fn request_with_extra_spaces_should_throw_malformedrequestline() {
         let input = "GET  /  HTTP/1.1\r\n\
             Host: localhost:8080\r\n\
             User-Agent: curl/7.81.0\r\n\
@@ -390,7 +435,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered);
+        let result = request_from_reader(&mut buffered).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -398,22 +443,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn incomplete_request_should_throw_unexpectedeof() {
+    #[tokio::test]
+    async fn incomplete_request_should_throw_unexpectedeof() {
         let input = "GET / HTTP/1.1";
         let mut reader = input.as_bytes();
 
-        let result = request_from_reader(&mut reader);
+        let result = request_from_reader(&mut reader).await;
 
         assert!(matches!(result, Err(HttpError::UnexpectedEOF)));
     }
 
-    #[test]
-    fn valid_headers() {
+    #[tokio::test]
+    async fn valid_headers() {
         let input = "GET / HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let mut r = request_from_reader(&mut buffered).unwrap();
+        let mut r = request_from_reader(&mut buffered).await.unwrap();
 
         assert!(r.headers.get("host").is_some());
         assert!(r.headers.get("user-agent").is_some());
@@ -423,21 +468,46 @@ mod tests {
         assert_eq!(r.headers.get("accept").unwrap(), "*/*");
     }
 
-    #[test]
-    fn request_with_malformed_headers_throws_malformedheader() {
+    #[tokio::test]
+    async fn request_with_malformed_headers_throws_malformedheader() {
         let input = "GET / HTTP/1.1\r\nHost localhost:8080\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::MalformedHeader)));
     }
 
+    /// This test is a little contrived. It simulates the client never closing the connection through a lack of `client_write.drop()`
+    #[tokio::test]
+    async fn server_times_out_when_request_read_too_long() {
+        tokio::time::pause();
+
+        let (server_read, mut client_write) = io::duplex(4096);
+        let mut buffered = BufReader::new(server_read);
+
+        let headers = "\
+                POST /st HTTP/1.1\r\n\
+                Host: localhost:8080\r\n\
+                Content-Length: 100000\r\n\
+                \r\n";
+
+        client_write.write_all(headers.as_bytes()).await.unwrap();
+        client_write.write_all(b"abcd").await.unwrap();
+        client_write.flush().await.unwrap();
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::time::advance(Duration::from_secs(31)).await; //TODO 
+
+        let result = request_from_reader(&mut buffered).await.unwrap_err();
+        assert!(matches!(result, HttpError::Timeout));
+    }
+
     ///////////////////////// BODY TESTS /////////////////////////////////////////////////////////
 
-    #[test]
-    fn body_valid() {
+    #[tokio::test]
+    async fn body_valid() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -447,13 +517,13 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).unwrap();
+        let r = request_from_reader(&mut buffered).await.unwrap();
 
         assert_eq!(String::from_utf8(r.body).unwrap(), "hello world!");
     }
 
-    #[test]
-    fn body_shorter_than_content_length_should_throw_unexpectedeof() {
+    #[tokio::test]
+    async fn body_shorter_than_content_length_should_throw_unexpectedeof() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -463,14 +533,14 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::UnexpectedEOF)));
     }
 
-    #[test]
-    fn empty_body_with_empty_content_length_valid() {
+    #[tokio::test]
+    async fn empty_body_with_empty_content_length_valid() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -480,15 +550,15 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
         assert!(request.body.is_empty());
     }
 
-    #[test]
-    fn empty_body_without_content_length_valid() {
+    #[tokio::test]
+    async fn empty_body_without_content_length_valid() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -497,15 +567,15 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
         assert!(request.body.is_empty());
     }
 
-    #[test]
-    fn body_longer_than_content_length_should_throw_invalidbodylength() {
+    #[tokio::test]
+    async fn body_longer_than_content_length_should_throw_invalidbodylength() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -515,14 +585,14 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 30);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::InvalidBodyLength)));
     }
 
-    #[test]
-    fn no_content_length_but_body_exists_valid() {
+    #[tokio::test]
+    async fn no_content_length_but_body_exists_valid() {
         let input = "\
             POST /st HTTP/1.1\r\n\
                         Host: localhost:8080\r\n\
@@ -531,7 +601,7 @@ mod tests {
 
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered);
+        let r = request_from_reader(&mut buffered).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
