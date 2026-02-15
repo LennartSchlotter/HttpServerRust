@@ -36,10 +36,11 @@ The code features at times extensive in-line comments to document issues, lesson
 - Request Timeout
 - Request Size Limit
 - Header Validation
-- HTTP (TLS / SSL)
+- HTTPS (TLS / SSL)
 
 ## Expansion (Version 4) => Routing
 - Structure the routing with a simple router
+- Streamline response generation
 
 ## How could this be advanced further?
 - HTTP Pipelining
