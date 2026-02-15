@@ -106,14 +106,17 @@ impl ConnectionLimiter {
     }
 
     fn try_connect(&self, addr: IpAddr) -> Option<ConnectionGuard> {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = match self.inner.lock() {
+            Ok(map) => map,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let count = map.entry(addr).or_insert(0);
 
         if *count >= self.max_per_ip {
             return None;
         }
-        
         *count += 1;
+        drop(map);
         Some(ConnectionGuard {
             limiter: self.clone(),
             addr,
@@ -123,7 +126,10 @@ impl ConnectionLimiter {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        let mut map = self.limiter.inner.lock().unwrap();
+        let mut map = match self.limiter.inner.lock() {
+            Ok(map) => map,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
         if let Some(count) = map.get_mut(&self.addr) {
             *count -= 1;
@@ -465,37 +471,19 @@ mod tests {
     async fn rate_limit_enforcement() {
         let limiter = ConnectionLimiter::new(3);
 
-        let guard1 = limiter
-            .try_connect("192.0.2.1".parse().unwrap())
-            .unwrap();
-        let _guard2 = limiter
-            .try_connect("192.0.2.1".parse().unwrap())
-            .unwrap();
-        let _guard3 = limiter
-            .try_connect("192.0.2.1".parse().unwrap())
-            .unwrap();
+        let guard1 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+        let _guard2 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+        let _guard3 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
 
-        assert!(
-            limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .is_none()
-        );
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_none());
 
-        assert!(
-            limiter
-                .try_connect("198.1.1.1".parse().unwrap())
-                .is_some()
-        );
+        assert!(limiter.try_connect("198.1.1.1".parse().unwrap()).is_some());
 
         drop(guard1);
 
         sleep(Duration::from_millis(100)).await;
 
-        assert!(
-            limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .is_some()
-        );
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_some());
     }
 
     #[tokio::test]
@@ -503,23 +491,13 @@ mod tests {
         let limiter = ConnectionLimiter::new(3);
 
         {
-            let _guard1 = limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .unwrap();
-            let _guard2 = limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .unwrap();
-            let _guard3 = limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .unwrap();
+            let _guard1 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+            let _guard2 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+            let _guard3 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
         }
 
         sleep(Duration::from_millis(100)).await;
 
-        assert!(
-            limiter
-                .try_connect("192.0.2.1".parse().unwrap())
-                .is_some()
-        );
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_some());
     }
 }
