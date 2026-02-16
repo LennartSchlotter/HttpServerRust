@@ -12,6 +12,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
+    sync::Semaphore,
     time::{sleep, timeout},
 };
 
@@ -63,6 +64,8 @@ impl<H: Handler> Server<H> {
 impl<H: Handler + Send + Sync + 'static> ServerState<H> {
     /// Called on a `ServerState`, listening for connections.
     pub async fn listen(self: Arc<Self>) {
+        const MAX_CLIENTS: usize = 5000;
+        let sem = Arc::new(Semaphore::new(MAX_CLIENTS));
         loop {
             if self.closed.load(Ordering::SeqCst) {
                 println!("We cannot take any new connections so stop");
@@ -71,13 +74,20 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
             match self.listener.accept().await {
                 Ok((mut stream, addr)) => {
                     let ip = addr.ip();
-                    if let Some(guard) = self.limiter.try_connect(ip) {
-                        println!("Accepted a new connection");
+                    if let Some(ip_guard) = self.limiter.try_connect(ip) {
                         let handler_clone = Arc::clone(&self.handler);
+                        let sem_clone = Arc::clone(&sem);
                         tokio::spawn(async move {
-                            let _guard = guard; //move ownership
-                            if let Err(e) = handle(stream, &*handler_clone).await {
-                                eprintln!("Encountered error handling the stream: {e}");
+                            if let Ok(global_guard) = sem_clone.try_acquire() {
+                                println!("Accepted a new connection");
+                                let _guard = ip_guard; //move ownership
+                                let _global_guard = global_guard; //move ownership
+                                if let Err(e) = handle(stream, &*handler_clone).await {
+                                    eprintln!("Encountered error handling the stream: {e}");
+                                }
+                            } else {
+                                println!("Too many connections, rejecting client.");
+                                let _ = stream.shutdown().await;
                             }
                         });
                     } else {
