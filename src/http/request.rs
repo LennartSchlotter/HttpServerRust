@@ -101,6 +101,10 @@ pub enum HttpError {
     /// This can happen both due to the total request size exceeding 8 MiB, but also the headers themselves exceeding 32 KiB.
     #[error("Content too large")]
     ContentTooLarge,
+
+    /// One or more of the headers provided are invalid.
+    #[error("Invalid Headers")]
+    InvalidHeaders,
 }
 
 /// Parses the contents of a reader to a Request
@@ -202,6 +206,8 @@ impl Request {
     ///
     /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
     fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
+        const MAX_HEADER_SIZE: usize = 72;
+
         let string = String::from_utf8_lossy(data);
         let mut total_size = 0;
         match self.parse_state {
@@ -219,8 +225,21 @@ impl Request {
             }
             ParseState::ParseHeaders => {
                 let (header_size, done) = self.headers.parse_header(string.as_bytes())?;
+
                 total_size += header_size;
                 if done {
+                    if self.headers.len() > MAX_HEADER_SIZE {
+                        return Err(HttpError::InvalidHeaders);
+                    }
+
+                    if self.headers.get("host").is_none() {
+                        return Err(HttpError::InvalidHeaders);
+                    }
+
+                    if self.headers.duplicate_headers() {
+                        return Err(HttpError::InvalidHeaders);
+                    }
+
                     self.parse_state = ParseState::ParseBody;
                 }
                 Ok(total_size)
@@ -267,6 +286,7 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use std::{
+        fmt::Write,
         pin::Pin,
         task::{Context, Poll},
         time::Duration,
@@ -324,7 +344,9 @@ mod tests {
 
     fn large_body_test_input(size: usize) -> String {
         let mut s = String::with_capacity(size + 512);
-        s.push_str("POST / HTTP/1.1\r\nContent-Length: ");
+        s.push_str("POST / HTTP/1.1\r\n");
+        s.push_str("Host: example.com\r\n");
+        s.push_str("Content-Length: ");
         s.push_str(&size.to_string());
         s.push_str("\r\n\r\n");
         s.extend(std::iter::repeat_n('x', size));
@@ -506,7 +528,7 @@ mod tests {
         let input = "GET / HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let mut r = request_from_reader(&mut buffered).await.unwrap();
+        let r = request_from_reader(&mut buffered).await.unwrap();
 
         assert!(r.headers.get("host").is_some());
         assert!(r.headers.get("user-agent").is_some());
@@ -550,6 +572,49 @@ mod tests {
 
         let result = request_from_reader(&mut buffered).await.unwrap_err();
         assert!(matches!(result, HttpError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn critical_headers_cannot_appear_more_than_once() {
+        let input = "GET / HTTP/1.1\r\nHost: localhost:8080\r\nHost: localhost:8081\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n";
+        let mut chunk_reader = ChunkReader::new(input, 7);
+        let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
+        let r = request_from_reader(&mut buffered).await;
+
+        assert!(r.is_err());
+        matches!(r, Err(HttpError::InvalidHeaders));
+    }
+
+    #[tokio::test]
+    async fn header_size_cannot_exceed_max() {
+        let mut input = String::new();
+        input.push_str("GET / HTTP/1.1\r\n");
+        input.push_str("Host: localhost:8080\r\n");
+        for i in 1..=72 {
+            writeln!(&mut input, "X-Test-Header {i}: value").unwrap();
+        }
+        input.push_str("\r\n\r\n");
+        let mut chunk_reader = ChunkReader::new(&input, 7);
+        let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
+        let r = request_from_reader(&mut buffered).await;
+
+        assert!(r.is_err());
+        matches!(r, Err(HttpError::InvalidHeaders));
+    }
+
+    #[tokio::test]
+    async fn host_header_must_be_present() {
+        let mut input = String::new();
+        input.push_str("GET / HTTP/1.1\r\n");
+        input.push_str("test: value\r\n");
+        input.push_str("User-Agent: curl/7.81.0\r\n");
+        input.push_str("\r\n\r\n");
+        let mut chunk_reader = ChunkReader::new(&input, 7);
+        let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
+        let r = request_from_reader(&mut buffered).await;
+
+        assert!(r.is_err());
+        matches!(r, Err(HttpError::InvalidHeaders));
     }
 
     ///////////////////////// BODY TESTS /////////////////////////////////////////////////////////

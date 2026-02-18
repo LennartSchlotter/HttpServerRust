@@ -226,7 +226,7 @@ async fn process_request<H: Handler>(
     const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
     let request_future = request_from_reader(&mut stream);
     let request_res = timeout(KEEP_ALIVE_TIMEOUT, request_future).await;
-    let mut request = match request_res {
+    let request = match request_res {
         Ok(Ok(req)) => req,
         Ok(Err(HttpError::UnexpectedEOF)) => {
             return Ok(true);
@@ -254,7 +254,7 @@ async fn process_request<H: Handler>(
     };
 
     // FIXME We should probably have a dedicated place to manage headers
-    let keep_alive = Headers::get(&mut request.headers, "connection") != Some("close");
+    let keep_alive = Headers::get(&request.headers, "connection") != Some("close");
 
     let response = handler.call(&request, &mut stream).await?;
     if let Some(response) = response {
