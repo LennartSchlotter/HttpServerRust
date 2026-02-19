@@ -36,7 +36,7 @@ The code features at times extensive in-line comments to document issues, lesson
 - Request Timeout
 - Request Size Limit
 - Header Validation
-- HTTPS (TLS / SSL)
+- HTTPS (TLS 1.2 / 1.3)
 
 ## Expansion (Version 4) => Routing
 - Structure the routing with a simple router
