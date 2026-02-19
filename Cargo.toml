@@ -21,6 +21,7 @@ async-stream = "0.3.6"
 bytes = "1.11.1"
 tokio-test = "0.4.5"
 rustls = "0.23.36"
+webpki-roots = "1.0.6"
 
 [lints.rust]
 unsafe_code = "forbid"
