@@ -1,8 +1,10 @@
 use std::{
+    collections::HashMap,
     fmt::Debug,
     io::Error,
+    net::IpAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -10,10 +12,11 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
+    sync::Semaphore,
     time::{sleep, timeout},
 };
 
-use crate::http::response::{write_headers, write_status_line};
+use crate::{http::response::{write_headers, write_status_line}, runtime::tlshandler::handle_tls};
 use crate::http::{
     headers::Headers,
     request::{HttpError, request_from_reader},
@@ -32,7 +35,23 @@ pub struct Server<H: Handler> {
 struct ServerState<H: Handler> {
     listener: TcpListener,
     closed: AtomicBool,
+    limiter: ConnectionLimiter,
     handler: Arc<H>,
+}
+
+/// Limits connections for a certain Tcp Connection.
+#[derive(Clone, Debug)]
+struct ConnectionLimiter {
+    /// `HashMap` to store amount of connections per IP Address.
+    inner: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    /// Desired limit on the amount of connections per IP Address.
+    max_per_ip: usize,
+}
+
+/// RAII guard for each connection to be able to be dropped safely.
+struct ConnectionGuard {
+    limiter: ConnectionLimiter,
+    addr: IpAddr,
 }
 
 impl<H: Handler> Server<H> {
@@ -45,20 +64,39 @@ impl<H: Handler> Server<H> {
 impl<H: Handler + Send + Sync + 'static> ServerState<H> {
     /// Called on a `ServerState`, listening for connections.
     pub async fn listen(self: Arc<Self>) {
+        const MAX_CLIENTS: usize = 5000;
+        let sem = Arc::new(Semaphore::new(MAX_CLIENTS));
         loop {
             if self.closed.load(Ordering::SeqCst) {
                 println!("We cannot take any new connections so stop");
                 return;
             }
             match self.listener.accept().await {
-                Ok((stream, _)) => {
-                    println!("Accepted a new connection");
-                    let handler_clone = Arc::clone(&self.handler);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle(stream, &*handler_clone).await {
-                            eprintln!("Encountered error handling the stream: {e}");
-                        }
-                    });
+                Ok((mut stream, addr)) => {
+                    let ip = addr.ip();
+                    if let Some(ip_guard) = self.limiter.try_connect(ip) {
+                        let handler_clone = Arc::clone(&self.handler);
+                        let sem_clone = Arc::clone(&sem);
+                        tokio::spawn(async move {
+                            if let Ok(global_guard) = sem_clone.try_acquire() {
+                                println!("Accepted a new connection");
+                                let _guard = ip_guard; //move ownership
+                                let _global_guard = global_guard; //move ownership
+                                if let Err(e) = handle_tls().await {
+                                    eprintln!("Encountered error accepting TLS: {e}");
+                                }
+                                if let Err(e) = handle(stream, &*handler_clone).await {
+                                    eprintln!("Encountered error handling the stream: {e}");
+                                }
+                            } else {
+                                println!("Too many connections, rejecting client.");
+                                let _ = stream.shutdown().await;
+                            }
+                        });
+                    } else {
+                        println!("Shutting down, request limit reached");
+                        let _ = stream.shutdown().await;
+                    }
                 }
                 Err(error) => {
                     if self.closed.load(Ordering::SeqCst) {
@@ -67,6 +105,49 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                     eprintln!("Encountered error accepting connection: {error:}");
                     sleep(Duration::from_millis(50)).await;
                 }
+            }
+        }
+    }
+}
+
+impl ConnectionLimiter {
+    fn new(max_per_ip: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            max_per_ip,
+        }
+    }
+
+    fn try_connect(&self, addr: IpAddr) -> Option<ConnectionGuard> {
+        let mut map = match self.inner.lock() {
+            Ok(map) => map,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let count = map.entry(addr).or_insert(0);
+
+        if *count >= self.max_per_ip {
+            return None;
+        }
+        *count += 1;
+        drop(map);
+        Some(ConnectionGuard {
+            limiter: self.clone(),
+            addr,
+        })
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let mut map = match self.limiter.inner.lock() {
+            Ok(map) => map,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        if let Some(count) = map.get_mut(&self.addr) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&self.addr);
             }
         }
     }
@@ -82,9 +163,11 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
     handler: Arc<H>,
 ) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let limiter = ConnectionLimiter::new(20);
     let state = ServerState {
         listener,
         handler,
+        limiter,
         closed: AtomicBool::new(false),
     };
     let state_for_main = Arc::new(state);
@@ -146,7 +229,7 @@ async fn process_request<H: Handler>(
     const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
     let request_future = request_from_reader(&mut stream);
     let request_res = timeout(KEEP_ALIVE_TIMEOUT, request_future).await;
-    let mut request = match request_res {
+    let request = match request_res {
         Ok(Ok(req)) => req,
         Ok(Err(HttpError::UnexpectedEOF)) => {
             return Ok(true);
@@ -174,7 +257,7 @@ async fn process_request<H: Handler>(
     };
 
     // FIXME We should probably have a dedicated place to manage headers
-    let keep_alive = Headers::get(&mut request.headers, "connection") != Some("close");
+    let keep_alive = Headers::get(&request.headers, "connection") != Some("close");
 
     let response = handler.call(&request, &mut stream).await?;
     if let Some(response) = response {
@@ -218,14 +301,20 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use reqwest::Client;
-    use tokio::{io::AsyncWrite, time::timeout};
+    use tokio::{
+        io::AsyncWrite,
+        time::{sleep, timeout},
+    };
 
     use crate::{
         http::{
             request::{HttpError, Request},
             response::{Response, StatusCode, html_response},
         },
-        runtime::{handler::Handler, server::serve},
+        runtime::{
+            handler::Handler,
+            server::{ConnectionLimiter, serve},
+        },
     };
 
     struct MyHandler;
@@ -389,5 +478,39 @@ mod tests {
         assert!(elapsed < Duration::from_secs(1));
 
         server.close();
+    }
+
+    #[tokio::test]
+    async fn rate_limit_enforcement() {
+        let limiter = ConnectionLimiter::new(3);
+
+        let guard1 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+        let _guard2 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+        let _guard3 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_none());
+
+        assert!(limiter.try_connect("198.1.1.1".parse().unwrap()).is_some());
+
+        drop(guard1);
+
+        sleep(Duration::from_millis(100)).await;
+
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_some());
+    }
+
+    #[tokio::test]
+    async fn guard_auto_decrements_on_drop() {
+        let limiter = ConnectionLimiter::new(3);
+
+        {
+            let _guard1 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+            let _guard2 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+            let _guard3 = limiter.try_connect("192.0.2.1".parse().unwrap()).unwrap();
+        }
+
+        sleep(Duration::from_millis(100)).await;
+
+        assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_some());
     }
 }
