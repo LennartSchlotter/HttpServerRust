@@ -16,7 +16,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::http::response::{write_headers, write_status_line};
+use crate::{http::response::{write_headers, write_status_line}, runtime::tlshandler::handle_tls};
 use crate::http::{
     headers::Headers,
     request::{HttpError, request_from_reader},
@@ -82,6 +82,9 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                                 println!("Accepted a new connection");
                                 let _guard = ip_guard; //move ownership
                                 let _global_guard = global_guard; //move ownership
+                                if let Err(e) = handle_tls().await {
+                                    eprintln!("Encountered error accepting TLS: {e}");
+                                }
                                 if let Err(e) = handle(stream, &*handler_clone).await {
                                     eprintln!("Encountered error handling the stream: {e}");
                                 }
