@@ -1,3 +1,13 @@
+use crate::http::{
+    headers::Headers,
+    request::{HttpError, request_from_reader},
+    response::{Response, StatusCode, html_response},
+};
+use crate::runtime::handler::Handler;
+use crate::{
+    http::response::{write_headers, write_status_line},
+    runtime::tlshandler::handle_tls,
+};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -15,14 +25,6 @@ use tokio::{
     sync::Semaphore,
     time::{sleep, timeout},
 };
-
-use crate::{http::response::{write_headers, write_status_line}, runtime::tlshandler::handle_tls};
-use crate::http::{
-    headers::Headers,
-    request::{HttpError, request_from_reader},
-    response::{Response, StatusCode, html_response},
-};
-use crate::runtime::handler::Handler;
 
 /// A struct representing an instance of a `HttpServer`, containing the state of the server.
 #[derive(Debug)]
