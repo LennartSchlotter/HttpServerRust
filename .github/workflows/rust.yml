@@ -38,6 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install rustls-cert-gen
+        uses: taiki-e/cache-cargo-install-action@v3
+        with:
+          tool: rustls-cert-gen
+          locked: true
+      - name: Generate certificate
+        run: rustls-cert-gen --output certs/ --san localhost
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
       - name: Build

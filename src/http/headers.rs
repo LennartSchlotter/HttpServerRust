@@ -36,7 +36,7 @@ impl Headers {
     /// headers.insert("drink", "milk");
     /// assert_eq!(headers.get("drink"), Some("milk"));
     /// ```
-    pub fn get(&mut self, key: &str) -> Option<&str> {
+    pub fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).map(String::as_str)
     }
 
@@ -70,6 +70,35 @@ impl Headers {
         self.0
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+
+    /// Returns the length of the Headers, that being the raw amount of entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns the length of the Headers, that being the raw amount of entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Validates critical headers not appearing multiple times.
+    #[must_use]
+    pub fn duplicate_headers(&self) -> bool {
+        const CRITICAL_HEADERS: [&str; 4] =
+            ["host", "content-length", "transfer-encoding", "connection"];
+
+        for header in CRITICAL_HEADERS {
+            if let Some(value) = self.get(header)
+                && value.contains(", ")
+            {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Parses passed data from a byte array to a header.
@@ -134,6 +163,11 @@ impl Headers {
         }
 
         let key_lowercase = key.to_lowercase();
+
+        if key.eq("host") && value.is_empty() {
+            return Err(HttpError::InvalidHeaders);
+        }
+
         if self.0.contains_key(&key_lowercase) {
             self.append(key_lowercase, value);
         } else {

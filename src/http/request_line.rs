@@ -23,9 +23,7 @@ pub struct RequestLine {
 ///
 /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
 pub fn parse_request_line(request: &str) -> Result<(Option<RequestLine>, usize), HttpError> {
-    const VALID_METHODS: &[&str] = &[
-        "GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE",
-    ];
+    const VALID_METHODS: &[&str] = &["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"];
     const CRLF_LEN: usize = 2;
 
     if !request.contains("\r\n") {

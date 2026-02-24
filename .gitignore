@@ -22,3 +22,6 @@ target
 
 # Any custom assets
 assets
+
+# TLS
+*.pem

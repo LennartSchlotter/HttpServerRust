@@ -101,7 +101,7 @@ impl Handler for MyHandler {
 
 #[tokio::main]
 async fn main() -> Result<(), HttpError> {
-    const PORT: u16 = 8080;
+    const PORT: u16 = 443;
     let handler = MyHandler;
     let handler_arc = Arc::new(handler);
     let _server = serve(PORT, handler_arc).await?;
