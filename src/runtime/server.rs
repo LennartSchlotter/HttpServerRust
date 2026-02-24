@@ -399,11 +399,11 @@ mod tests {
     async fn server_can_establish_connection() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(443, handler_arc)
+        let server = serve(1026, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 443);
+        let base_url = format!("https://127.0.0.1:{}", 1026);
 
         let client = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -499,11 +499,11 @@ mod tests {
         const CONCURRENT_REQUESTS: usize = 20;
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(444, handler_arc)
+        let server = serve(1025, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 444);
+        let base_url = format!("https://127.0.0.1:{}", 1025);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
