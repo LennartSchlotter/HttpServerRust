@@ -9,6 +9,7 @@ use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject},
 };
+use std::env;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -165,6 +166,32 @@ impl Drop for ConnectionGuard {
     }
 }
 
+/// Helper function to extract a TLS server config.
+///
+/// This will for now only read the paths for the certificate and private key from the environment, but later be expanded to read configuration from a config file.
+///
+/// # Errors
+///
+/// Throws an Error if reading files fails.
+fn build_tls_config() -> Result<ServerConfig, Error> {
+    let cert_dir = env::var("TLS_CERT_PATH").unwrap_or_else(|_| "certs/cert.pem".to_string());
+    let pk_dir = env::var("TLS_KEY_PATH").unwrap_or_else(|_| "certs/cert.key.pem".to_string());
+
+    let config_builder = ServerConfig::builder().with_no_client_auth();
+    let cert_chain: Vec<_> = CertificateDer::pem_file_iter(cert_dir)
+        .map_err(Error::other)?
+        .collect::<Result<_, _>>()
+        .map_err(Error::other)?;
+    let key_der = PrivatePkcs8KeyDer::from_pem_file(pk_dir)
+        .map_err(Error::other)?
+        .into();
+    let config = config_builder
+        .with_single_cert(cert_chain, key_der)
+        .map_err(Error::other)?;
+
+    Ok(config)
+}
+
 /// Serves an instance of the Http Server based on the passed handler on the specified port
 ///
 /// # Errors
@@ -176,17 +203,8 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
 ) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let limiter = ConnectionLimiter::new(20);
-    let config_builder = ServerConfig::builder().with_no_client_auth();
-    let cert_chain: Vec<_> = CertificateDer::pem_file_iter("certs/cert.pem")
-        .map_err(Error::other)?
-        .collect::<Result<_, _>>()
-        .map_err(Error::other)?;
-    let key_der = PrivatePkcs8KeyDer::from_pem_file("certs/cert.key.pem")
-        .map_err(Error::other)?
-        .into();
-    let mut config = config_builder
-        .with_single_cert(cert_chain, key_der)
-        .map_err(Error::other)?;
+
+    let mut config = build_tls_config()?;
 
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let tls_config = Arc::new(config);
