@@ -39,10 +39,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install rustls-cert-gen
-        uses: taiki-e/cache-cargo-install-action@v1
+        uses: taiki-e/cache-cargo-install-action@v3
         with:
           tool: rustls-cert-gen
-          args: --locked
+          locked: true
       - name: Generate certificate
         run: rustls-cert-gen --output certs/ --san localhost
       - name: Cache Cargo registry and build artifacts
