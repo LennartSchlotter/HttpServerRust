@@ -1,4 +1,4 @@
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::http::{
     request::{HttpError, Request},
@@ -11,9 +11,9 @@ pub trait Handler: Send + Sync {
     ///
     /// # Errors
     /// Throws an `HttpError` if processing the request fails.
-    fn call<W: AsyncWrite + Unpin + Send>(
+    fn call<S: AsyncRead + AsyncWrite + Unpin + Send>(
         &self,
         req: &Request,
-        stream: W,
+        stream: S,
     ) -> impl Future<Output = Result<Option<Response>, HttpError>> + Send;
 }

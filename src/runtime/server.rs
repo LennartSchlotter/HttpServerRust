@@ -1,12 +1,13 @@
+use crate::http::response::{write_headers, write_status_line};
 use crate::http::{
     headers::Headers,
     request::{HttpError, request_from_reader},
     response::{Response, StatusCode, html_response},
 };
 use crate::runtime::handler::Handler;
-use crate::{
-    http::response::{write_headers, write_status_line},
-    runtime::tlshandler::handle_tls,
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject},
 };
 use std::{
     collections::HashMap,
@@ -20,11 +21,12 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
     sync::Semaphore,
     time::{sleep, timeout},
 };
+use tokio_rustls::TlsAcceptor;
 
 /// A struct representing an instance of a `HttpServer`, containing the state of the server.
 #[derive(Debug)]
@@ -38,6 +40,7 @@ struct ServerState<H: Handler> {
     listener: TcpListener,
     closed: AtomicBool,
     limiter: ConnectionLimiter,
+    tls_config: Arc<ServerConfig>,
     handler: Arc<H>,
 }
 
@@ -68,9 +71,10 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
     pub async fn listen(self: Arc<Self>) {
         const MAX_CLIENTS: usize = 5000;
         let sem = Arc::new(Semaphore::new(MAX_CLIENTS));
+        let acceptor = Arc::new(TlsAcceptor::from(Arc::clone(&self.tls_config)));
         loop {
             if self.closed.load(Ordering::SeqCst) {
-                println!("We cannot take any new connections so stop");
+                println!("We cannot take any new connections as the server was closed.");
                 return;
             }
             match self.listener.accept().await {
@@ -79,16 +83,22 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                     if let Some(ip_guard) = self.limiter.try_connect(ip) {
                         let handler_clone = Arc::clone(&self.handler);
                         let sem_clone = Arc::clone(&sem);
+                        let acceptor_clone = Arc::clone(&acceptor);
                         tokio::spawn(async move {
                             if let Ok(global_guard) = sem_clone.try_acquire() {
                                 println!("Accepted a new connection");
                                 let _guard = ip_guard; //move ownership
                                 let _global_guard = global_guard; //move ownership
-                                if let Err(e) = handle_tls().await {
-                                    eprintln!("Encountered error accepting TLS: {e}");
-                                }
-                                if let Err(e) = handle(stream, &*handler_clone).await {
-                                    eprintln!("Encountered error handling the stream: {e}");
+
+                                match TlsAcceptor::accept(&acceptor_clone, &mut stream).await {
+                                    Ok(tls_stream) => {
+                                        if let Err(e) = handle(tls_stream, &*handler_clone).await {
+                                            eprintln!("Encountered error handling the stream: {e}");
+                                        }
+                                    }
+                                    Err(err) => {
+                                        eprintln!("Encountered error during TSL handshake: {err}");
+                                    }
                                 }
                             } else {
                                 println!("Too many connections, rejecting client.");
@@ -166,10 +176,25 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
 ) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let limiter = ConnectionLimiter::new(20);
+    let config_builder = ServerConfig::builder().with_no_client_auth();
+    let cert_chain: Vec<_> = CertificateDer::pem_file_iter("certs/cert.pem")
+        .map_err(Error::other)?
+        .collect::<Result<_, _>>()
+        .map_err(Error::other)?;
+    let key_der = PrivatePkcs8KeyDer::from_pem_file("certs/cert.key.pem")
+        .map_err(Error::other)?
+        .into();
+    let mut config = config_builder
+        .with_single_cert(cert_chain, key_der)
+        .map_err(Error::other)?;
+
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let tls_config = Arc::new(config);
     let state = ServerState {
         listener,
         handler,
         limiter,
+        tls_config,
         closed: AtomicBool::new(false),
     };
     let state_for_main = Arc::new(state);
@@ -188,7 +213,10 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
 /// # Errors
 ///
 /// Throws an `HttpError` if the parsing process fails.
-async fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), HttpError> {
+async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
+    mut stream: S,
+    handler: &H,
+) -> Result<(), HttpError> {
     const SERVER_TIMEOUT: Duration = Duration::from_secs(120);
 
     loop {
@@ -224,8 +252,8 @@ async fn handle<H: Handler>(mut stream: TcpStream, handler: &H) -> Result<(), Ht
 /// # Errors
 ///
 /// Throws an `HttpError` if parsing fails or if a timeout occurs.
-async fn process_request<H: Handler>(
-    mut stream: &mut TcpStream,
+async fn process_request<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
+    mut stream: &mut S,
     handler: &H,
 ) -> Result<bool, HttpError> {
     const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -289,7 +317,10 @@ async fn process_request<H: Handler>(
 /// # Errors
 ///
 /// Throws an `HttpError` if the write process fails.
-async fn write_response(mut stream: &mut TcpStream, response: Response) -> Result<(), HttpError> {
+async fn write_response<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: &mut S,
+    response: Response,
+) -> Result<(), HttpError> {
     write_status_line(&mut stream, response.status).await?;
     let mut headers = response.headers;
     write_headers(&mut stream, &mut headers).await?;
@@ -303,10 +334,15 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use reqwest::Client;
+    use rustls::{
+        ClientConfig, ProtocolVersion, RootCertStore, ServerConfig,
+        pki_types::{PrivatePkcs8KeyDer, ServerName},
+    };
     use tokio::{
         io::AsyncWrite,
         time::{sleep, timeout},
     };
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
 
     use crate::{
         http::{
@@ -318,6 +354,8 @@ mod tests {
             server::{ConnectionLimiter, serve},
         },
     };
+
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
 
     struct MyHandler;
 
@@ -343,14 +381,15 @@ mod tests {
     async fn server_can_establish_connection() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(8080, handler_arc)
+        let server = serve(443, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("http://127.0.0.1:{}", 8080);
+        let base_url = format!("https://127.0.0.1:{}", 443);
 
         let client = Client::builder()
             .timeout(Duration::from_secs(5))
+            .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
 
@@ -380,9 +419,10 @@ mod tests {
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("http://127.0.0.1:{}", 8081);
+        let base_url = format!("https://127.0.0.1:{}", 8081);
 
         let client = Client::builder()
+            .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
@@ -413,9 +453,10 @@ mod tests {
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("http://127.0.0.1:{}", 8082);
+        let base_url = format!("https://127.0.0.1:{}", 8082);
 
         let client = Client::builder()
+            .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
@@ -440,13 +481,14 @@ mod tests {
         const CONCURRENT_REQUESTS: usize = 20;
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(8083, handler_arc)
+        let server = serve(444, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("http://127.0.0.1:{}", 8083);
+        let base_url = format!("https://127.0.0.1:{}", 444);
 
         let client = Client::builder()
+            .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
@@ -514,5 +556,44 @@ mod tests {
         sleep(Duration::from_millis(100)).await;
 
         assert!(limiter.try_connect("192.0.2.1".parse().unwrap()).is_some());
+    }
+
+    #[tokio::test]
+    async fn server_can_establish_connection_via_tls() {
+        let subject_names = vec!["localhost".to_string()];
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(subject_names).unwrap();
+
+        let mut root_store = RootCertStore::empty();
+        root_store.add(cert.der().clone()).unwrap();
+
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let der_bytes = signing_key.serialize_der();
+        let private_key_der = PrivatePkcs8KeyDer::from(der_bytes);
+
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], private_key_der.into())
+            .unwrap();
+
+        let (client, server) = tokio::io::duplex(65536);
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from("localhost").unwrap();
+
+        let (server_result, client_result) = tokio::join!(
+            TlsAcceptor::accept(&acceptor, server),
+            TlsConnector::connect(&connector, server_name, client),
+        );
+
+        let _server_stream = server_result.unwrap();
+        let client_stream = client_result.unwrap();
+
+        let result = client_stream.get_ref().1.protocol_version().unwrap();
+        assert_eq!(result, ProtocolVersion::TLSv1_3);
     }
 }
