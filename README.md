@@ -12,14 +12,7 @@ The code features at times extensive in-line comments to document issues, lesson
     - Request Parser
     - Response Handling
 
-## Post-Mortem
-### What would I do differently?
-- Have a clearer structure of the goal from the get-go to not have to refactor code and keep a cleaner separation of concerns
-- Be more mindful of Security
-
-### Mistakes made
-
-### Fundamental Concepts learned / applied
+## Fundamental Concepts learned / applied
 - Network Programming
     - Protocols
         - HTTP/1.1, TCP, UDP
@@ -38,9 +31,20 @@ The code features at times extensive in-line comments to document issues, lesson
 - Header Validation
 - HTTPS (TLS 1.2 / 1.3)
 
-## Expansion (Version 4) => Routing
-- Structure the routing with a simple router
+## Expansion (Version 4) => Extensibility
+- Enable easier configuration of endpoints and responses through a router
+    - Dynamic path segments
 - Streamline response generation
+- Configuration of hardcoded values with config support
 
 ## How could this be advanced further?
 - HTTP Pipelining
+
+## Post-Mortem
+### What would I do differently?
+- Have a clearer structure of the goal from the get-go to not have to refactor code and keep a cleaner separation of concerns
+- Be more mindful of Security
+
+### Review
+
+### Future
