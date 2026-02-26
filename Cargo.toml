@@ -25,6 +25,8 @@ webpki-roots = "1.0.6"
 rustls-pemfile = "2.2.0"
 tokio-rustls = "0.26.4"
 rcgen = "0.14.7"
+config = "0.15.19"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [lints.rust]
 unsafe_code = "forbid"
