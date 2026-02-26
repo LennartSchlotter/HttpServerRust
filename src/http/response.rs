@@ -25,6 +25,8 @@ pub enum StatusCode {
     Ok = 200,
     /// Represents a successful creation
     Created = 201,
+    /// Represents a redirect
+    MovedPermanently = 301,
     /// Represents an invalid request
     BadRequest = 400,
     /// Represents the request target not being found as a valid endpoint
@@ -51,6 +53,7 @@ impl StatusCode {
         match self {
             Self::Ok => "OK",
             Self::Created => "Created",
+            Self::MovedPermanently => "Moved Permanently",
             Self::BadRequest => "Bad Request",
             Self::NotFound => "Not Found",
             Self::RequestTimeout => "Request Timeout",
@@ -198,6 +201,7 @@ mod tests {
         let valid_methods = [
             (StatusCode::Ok, "OK"),
             (StatusCode::Created, "Created"),
+            (StatusCode::MovedPermanently, "Moved Permanently"),
             (StatusCode::BadRequest, "Bad Request"),
             (StatusCode::NotFound, "Not Found"),
             (StatusCode::InternalServerError, "Internal Server Error"),

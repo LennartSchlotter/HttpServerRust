@@ -202,6 +202,7 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
     handler: Arc<H>,
 ) -> Result<Server<H>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let limiter = ConnectionLimiter::new(20);
 
     let mut config = build_tls_config()?;
@@ -222,6 +223,25 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
     };
     tokio::spawn(async move {
         state_for_thread.listen().await;
+    });
+    tokio::spawn(async move {
+        loop {
+            match http_listener.accept().await {
+                Ok((mut stream, _addr)) => {
+                    let mut headers = Headers::new();
+                    headers.insert("Location", "https://localhost:443"); //FIXME, don't hardcode this, construct it manually with config value
+                    let response = Response {
+                        status: StatusCode::MovedPermanently,
+                        headers,
+                        body: b"".to_vec(),
+                    };
+                    if let Err(e) = write_response(&mut stream, response).await {
+                        eprintln!("Error writing response {e}");
+                    }
+                }
+                Err(err) => eprintln!("Error accepting HTTP connection: {err}"),
+            }
+        }
     });
     Ok(serverhandle)
 }
@@ -467,11 +487,11 @@ mod tests {
     async fn server_can_establish_multiple_connections() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(8082, handler_arc)
+        let server = serve(7070, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 8082);
+        let base_url = format!("https://127.0.0.1:{}", 7070);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
