@@ -5,6 +5,7 @@
 //! It supports basic request parsing and response generation.
 //!
 //! Refer to the library documentation of reusable components.
+use config::{Config, File};
 use httpserver::{
     http::{
         headers::Headers,
@@ -101,10 +102,27 @@ impl Handler for MyHandler {
 
 #[tokio::main]
 async fn main() -> Result<(), HttpError> {
-    const PORT: u16 = 443;
     let handler = MyHandler;
     let handler_arc = Arc::new(handler);
-    let _server = serve(PORT, handler_arc).await?;
+
+    let config_source = File::with_name("config");
+    let config = Config::builder()
+        .add_source(config_source)
+        .set_default("port", 443)?
+        .set_default("http_port", 80)?
+        .set_default("max_clients", 5000)?
+        .set_default("cert_key_dir", "certs/cert.pem")?
+        .set_default("tls_key_dir", "certs/cert.key.pem")?
+        .set_default("tcp_listener_address", "127.0.0.1")?
+        .set_default("ip_connection_limit", 20)?
+        .set_default("keep_alive_timeout", 15)?
+        .set_default("parsing_timeout", 30)?
+        .set_default("request_size_limit_in_mib", 16)?
+        .set_default("header_size_limit_in_kib", 32)?
+        .set_default("max_header_size", 72)?
+        .build()?;
+
+    let _server = serve(config, handler_arc).await?;
     tokio::task::spawn_blocking(|| {
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf)

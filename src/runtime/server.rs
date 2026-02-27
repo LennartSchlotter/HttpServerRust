@@ -5,11 +5,12 @@ use crate::http::{
     response::{Response, StatusCode, html_response},
 };
 use crate::runtime::handler::Handler;
+use config::Config;
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject},
 };
-use std::env;
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -43,6 +44,38 @@ struct ServerState<H: Handler> {
     limiter: ConnectionLimiter,
     tls_config: Arc<ServerConfig>,
     handler: Arc<H>,
+    settings: Arc<Settings>,
+}
+
+/// A struct containing the configurable parts of the application
+#[derive(Clone, Debug, Deserialize)]
+pub struct Settings {
+    /// The port to be used for the main https entry
+    port: u16,
+    /// The port to be used to listen for http requests, which are redirected to https
+    http_port: u16,
+    /// The total amount of clients able to connect to the server
+    max_clients: usize,
+    /// The directory in which the certificate private key is stored
+    cert_key_dir: String,
+    /// The directory in which the private key is stored
+    tls_key_dir: String,
+    /// The address for the tcp listener
+    tcp_listener_address: String,
+    /// The connection limit per ip
+    ip_connection_limit: usize,
+    /// The timeout for processing a request
+    connection_timeout: u64,
+    /// The timeout for `keep_alive`
+    keep_alive_timeout: u64,
+    /// The timeout for parsing a request
+    pub parsing_timeout: u64,
+    /// The size limit in `MIB` for the entire request
+    pub request_size_limit_in_mib: usize,
+    /// The size limit in `KIB` for the entire request
+    pub header_size_limit_in_kib: usize,
+    /// The maximum amount of headers allowed per request
+    pub max_header_size: usize,
 }
 
 /// Limits connections for a certain Tcp Connection.
@@ -70,8 +103,8 @@ impl<H: Handler> Server<H> {
 impl<H: Handler + Send + Sync + 'static> ServerState<H> {
     /// Called on a `ServerState`, listening for connections.
     pub async fn listen(self: Arc<Self>) {
-        const MAX_CLIENTS: usize = 5000;
-        let sem = Arc::new(Semaphore::new(MAX_CLIENTS));
+        let max_clients = self.settings.max_clients;
+        let sem = Arc::new(Semaphore::new(max_clients));
         let acceptor = Arc::new(TlsAcceptor::from(Arc::clone(&self.tls_config)));
         loop {
             if self.closed.load(Ordering::SeqCst) {
@@ -85,15 +118,18 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                         let handler_clone = Arc::clone(&self.handler);
                         let sem_clone = Arc::clone(&sem);
                         let acceptor_clone = Arc::clone(&acceptor);
+                        let settings_clone = Arc::clone(&self.settings);
                         tokio::spawn(async move {
                             if let Ok(global_guard) = sem_clone.try_acquire() {
                                 println!("Accepted a new connection");
                                 let _guard = ip_guard; //move ownership
                                 let _global_guard = global_guard; //move ownership
-
                                 match TlsAcceptor::accept(&acceptor_clone, &mut stream).await {
                                     Ok(tls_stream) => {
-                                        if let Err(e) = handle(tls_stream, &*handler_clone).await {
+                                        if let Err(e) =
+                                            handle(tls_stream, &*handler_clone, &settings_clone)
+                                                .await
+                                        {
                                             eprintln!("Encountered error handling the stream: {e}");
                                         }
                                     }
@@ -168,14 +204,12 @@ impl Drop for ConnectionGuard {
 
 /// Helper function to extract a TLS server config.
 ///
-/// This will for now only read the paths for the certificate and private key from the environment, but later be expanded to read configuration from a config file.
-///
 /// # Errors
 ///
-/// Throws an Error if reading files fails.
-fn build_tls_config() -> Result<ServerConfig, Error> {
-    let cert_dir = env::var("TLS_CERT_PATH").unwrap_or_else(|_| "certs/cert.pem".to_string());
-    let pk_dir = env::var("TLS_KEY_PATH").unwrap_or_else(|_| "certs/cert.key.pem".to_string());
+/// Throws an Error if reading files fails.s
+fn build_tls_config(settings: &Settings) -> Result<ServerConfig, Error> {
+    let cert_dir = settings.cert_key_dir.clone();
+    let pk_dir = settings.tls_key_dir.clone();
 
     let config_builder = ServerConfig::builder().with_no_client_auth();
     let cert_chain: Vec<_> = CertificateDer::pem_file_iter(cert_dir)
@@ -198,23 +232,28 @@ fn build_tls_config() -> Result<ServerConfig, Error> {
 ///
 /// Throws an Error if binding the tcp listener fails.
 pub async fn serve<H: Handler + Send + Sync + 'static>(
-    port: u16,
+    config: Config,
     handler: Arc<H>,
 ) -> Result<Server<H>, Error> {
-    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let limiter = ConnectionLimiter::new(20);
+    let settings = Arc::new(config.try_deserialize::<Settings>().map_err(Error::other)?);
 
-    let mut config = build_tls_config()?;
+    let listener =
+        TcpListener::bind((settings.tcp_listener_address.as_str(), settings.port)).await?;
+    let http_listener =
+        TcpListener::bind((settings.tcp_listener_address.as_str(), settings.http_port)).await?;
+    let limiter = ConnectionLimiter::new(settings.ip_connection_limit);
 
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    let tls_config = Arc::new(config);
+    let mut server_config = build_tls_config(&settings)?;
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    let tls_config = Arc::new(server_config);
     let state = ServerState {
         listener,
         handler,
         limiter,
         tls_config,
         closed: AtomicBool::new(false),
+        settings,
     };
     let state_for_main = Arc::new(state);
     let state_for_thread = Arc::clone(&state_for_main);
@@ -254,11 +293,17 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
 async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut stream: S,
     handler: &H,
+    settings: &Settings,
 ) -> Result<(), HttpError> {
-    const SERVER_TIMEOUT: Duration = Duration::from_secs(120);
+    let server_timeout_amount = settings.connection_timeout;
+    let server_timeout = Duration::from_secs(server_timeout_amount);
 
     loop {
-        let result = timeout(SERVER_TIMEOUT, process_request(&mut stream, handler)).await;
+        let result = timeout(
+            server_timeout,
+            process_request(&mut stream, handler, settings),
+        )
+        .await;
 
         match result {
             Ok(Ok(should_continue)) => {
@@ -293,10 +338,12 @@ async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
 async fn process_request<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut stream: &mut S,
     handler: &H,
+    settings: &Settings,
 ) -> Result<bool, HttpError> {
-    const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
-    let request_future = request_from_reader(&mut stream);
-    let request_res = timeout(KEEP_ALIVE_TIMEOUT, request_future).await;
+    let keep_alive_timeout_value = settings.keep_alive_timeout;
+    let keep_alive_timeout = Duration::from_secs(keep_alive_timeout_value);
+    let request_future = request_from_reader(&mut stream, settings);
+    let request_res = timeout(keep_alive_timeout, request_future).await;
     let request = match request_res {
         Ok(Ok(req)) => req,
         Ok(Err(HttpError::UnexpectedEOF)) => {
@@ -371,6 +418,7 @@ async fn write_response<S: AsyncRead + AsyncWrite + Unpin>(
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use config::{Config, File};
     use reqwest::Client;
     use rustls::{
         ClientConfig, ProtocolVersion, RootCertStore, ServerConfig,
@@ -419,7 +467,17 @@ mod tests {
     async fn server_can_establish_connection() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(1026, handler_arc)
+
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1026)
+            .unwrap()
+            .set_override("http_port", 1027)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, handler_arc)
             .await
             .expect("Failed to start server");
 
@@ -453,11 +511,21 @@ mod tests {
     async fn endpoints_write_correct_response() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(8081, handler_arc)
+
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1028)
+            .unwrap()
+            .set_override("http_port", 1029)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 8081);
+        let base_url = format!("https://127.0.0.1:{}", 1028);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
@@ -487,11 +555,21 @@ mod tests {
     async fn server_can_establish_multiple_connections() {
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(7070, handler_arc)
+
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1030)
+            .unwrap()
+            .set_override("http_port", 1031)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 7070);
+        let base_url = format!("https://127.0.0.1:{}", 1030);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
@@ -519,11 +597,22 @@ mod tests {
         const CONCURRENT_REQUESTS: usize = 20;
         let handler = MyHandler;
         let handler_arc = Arc::new(handler);
-        let server = serve(1025, handler_arc)
+
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1032)
+            .unwrap()
+            .set_override("http_port", 1033)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let server = serve(config, handler_arc)
             .await
             .expect("Failed to start server");
 
-        let base_url = format!("https://127.0.0.1:{}", 1025);
+        let base_url = format!("https://127.0.0.1:{}", 1032);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
