@@ -11,7 +11,22 @@ Standalone Rust Program, serving as a learning project. The goal is to implement
 
 ## Usage
 Code:
-```
+```rust
+#[tokio::main]
+async fn main() -> Result<(), HttpError> {
+    //Configure router
+    let router = Router::new();
+
+    //Set up config
+    let config = build_config()?;
+
+    //Serve the application
+    let _server = serve(config, router).await?;
+
+    //Enable
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
 ```
 
 # Additional Files
@@ -43,13 +58,13 @@ The code features at times extensive in-line comments to document issues, lesson
 
 ### Extensibility
 - Enable easier configuration of endpoints and responses through a router
-    - - Streamline response generation
+    - Streamline response generation
     [- Dynamic path segments]
 - Configuration of hardcoded values with config support
 - Redirect HTTP to HTTPS
 
-## How could this be advanced further?
-- HTTP Pipelining
+#### Known Limitation
+- The chunked encoding functionality is not supported by the server implementation.
 
 ## Post-Mortem
 ### What would I do differently?
@@ -61,3 +76,5 @@ The code features at times extensive in-line comments to document issues, lesson
 ### Review
 
 ### Future
+- HTTP Pipelining
+- Better Header handling
