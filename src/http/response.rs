@@ -3,7 +3,10 @@ use std::{
     io::{self},
 };
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::{
+    fs::read_to_string,
+    io::{AsyncWrite, AsyncWriteExt},
+};
 
 use crate::{http::headers::Headers, http::request::HttpError};
 
@@ -184,6 +187,23 @@ pub fn html_response(status: StatusCode, html: &str) -> Response {
         headers,
         body: html.as_bytes().to_vec(),
     }
+}
+
+/// Helper function to remove boilerplate for creating responses with associated headers through a passed html file.
+///
+/// # Errors
+///
+/// Returns an `HttpError` if reading the file fails.
+pub async fn file_response(status: StatusCode, path: &str) -> Result<Response, HttpError> {
+    let mut headers = Headers::new();
+    let body = read_to_string(path).await?;
+    headers.insert("content-type", "text/html");
+    headers.insert("content-length", body.len().to_string());
+    Ok(Response {
+        status,
+        headers,
+        body: body.as_bytes().to_vec(),
+    })
 }
 
 #[cfg(test)]
