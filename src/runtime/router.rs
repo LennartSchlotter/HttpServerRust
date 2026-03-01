@@ -33,7 +33,7 @@ impl Router {
 
     /// Retrieves an optional closure if the passed endpoint is present in the router.
     #[must_use]
-    pub fn get(&self, endpoint: &str) -> Option<&HandlerFn> {
+    pub fn retrieve(&self, endpoint: &str) -> Option<&HandlerFn> {
         self.0.get(endpoint)
     }
 
@@ -43,7 +43,7 @@ impl Router {
     /// Throws an `HttpError` if processing the request fails.
     pub async fn call(&self, request: Request) -> Result<Response, HttpError> {
         let endpoint = request.request_line.request_target.as_str();
-        let closure: Option<&HandlerFn> = self.get(endpoint);
+        let closure: Option<&HandlerFn> = self.retrieve(endpoint);
         let response = if let Some(closure) = closure {
             let result = closure(request);
             result.await
