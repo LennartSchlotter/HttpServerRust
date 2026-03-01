@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use config::ConfigError;
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -8,8 +9,11 @@ use tokio::{
 };
 
 use crate::{
-    http::headers::Headers,
-    http::request_line::{RequestLine, parse_request_line},
+    http::{
+        headers::Headers,
+        request_line::{RequestLine, parse_request_line},
+    },
+    runtime::server::Settings,
 };
 
 /// Representation of a HTTP request with request line, headers and body
@@ -105,6 +109,10 @@ pub enum HttpError {
     /// One or more of the headers provided are invalid.
     #[error("Invalid Headers")]
     InvalidHeaders,
+
+    /// There was an error reading the config file.
+    #[error("Config Error")]
+    ConfigError(#[from] ConfigError),
 }
 
 /// Parses the contents of a reader to a Request
@@ -118,10 +126,17 @@ pub enum HttpError {
 /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
 pub async fn request_from_reader<R: AsyncRead + Unpin>(
     reader: &mut R,
+    settings: &Settings,
 ) -> Result<Request, HttpError> {
-    const READ_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-    const MAX_REQUEST_SIZE: usize = 8 * 1024 * 1024;
-    const MAX_HEADER_SIZE: usize = 32 * 1024;
+    let request_timeout_value = settings.parsing_timeout;
+    let read_request_timeout = Duration::from_secs(request_timeout_value);
+
+    let request_size_value = settings.request_size_limit_in_mib;
+    let max_request_size = request_size_value * 1024 * 1024;
+
+    let header_size_value = settings.header_size_limit_in_kib;
+    let max_header_size = header_size_value * 1024;
+
     let mut buffer: Vec<u8> = Vec::new();
     let mut temp = [0u8; 64];
     let request_line = RequestLine {
@@ -142,11 +157,11 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
     let mut header_bytes_read = 0;
 
     loop {
-        let result = timeout(READ_REQUEST_TIMEOUT, async {
+        let result = timeout(read_request_timeout, async {
             match request.parse_state {
                 ParseState::Done => return Ok(true),
                 ParseState::Initialized | ParseState::ParseHeaders | ParseState::ParseBody => {
-                    let parsed = request.parse(&buffer[..bytes_read])?;
+                    let parsed = request.parse(&buffer[..bytes_read], settings)?;
                     if parsed > 0 {
                         buffer.drain(0..parsed);
                         bytes_read -= parsed;
@@ -173,11 +188,11 @@ pub async fn request_from_reader<R: AsyncRead + Unpin>(
                     bytes_read += read;
                     total_bytes_read += read;
 
-                    if total_bytes_read > MAX_REQUEST_SIZE {
+                    if total_bytes_read > max_request_size {
                         return Err(HttpError::ContentTooLarge);
                     }
 
-                    if header_bytes_read > MAX_HEADER_SIZE {
+                    if header_bytes_read > max_header_size {
                         return Err(HttpError::ContentTooLarge);
                     }
                 }
@@ -205,8 +220,8 @@ impl Request {
     /// Throws an `HttpError` if the parsing fails.
     ///
     /// This is related to the parsed data from the buffer containing RFC-incompatible formatting.
-    fn parse(&mut self, data: &[u8]) -> Result<usize, HttpError> {
-        const MAX_HEADER_SIZE: usize = 72;
+    fn parse(&mut self, data: &[u8], settings: &Settings) -> Result<usize, HttpError> {
+        let max_header_size = settings.max_header_size;
 
         let string = String::from_utf8_lossy(data);
         let mut total_size = 0;
@@ -228,7 +243,7 @@ impl Request {
 
                 total_size += header_size;
                 if done {
-                    if self.headers.len() > MAX_HEADER_SIZE {
+                    if self.headers.len() > max_header_size {
                         return Err(HttpError::InvalidHeaders);
                     }
 
@@ -292,10 +307,14 @@ mod tests {
         time::Duration,
     };
 
+    use config::{Config, File};
     use tokio::io::AsyncWriteExt;
     use tokio::io::{self, AsyncRead, BufReader, ReadBuf};
 
-    use crate::http::request::{HttpError, request_from_reader};
+    use crate::{
+        http::request::{HttpError, request_from_reader},
+        runtime::server::Settings,
+    };
 
     // Helpers
 
@@ -377,9 +396,14 @@ mod tests {
              User-Agent: curl/7.81.0\r\n\
              Accept: */*\r\n\
              \r\n";
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await.unwrap();
+        let r = request_from_reader(&mut buffered, &settings).await.unwrap();
 
         assert_eq!(r.request_line.method, "GET");
         assert_eq!(r.request_line.request_target, "/");
@@ -394,9 +418,13 @@ mod tests {
              Accept: */*\r\n\
              \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, input.len());
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await.unwrap();
+        let r = request_from_reader(&mut buffered, &settings).await.unwrap();
 
         assert_eq!(r.request_line.method, "GET");
         assert_eq!(r.request_line.request_target, "/coffee");
@@ -414,9 +442,13 @@ mod tests {
              \r\n\
              flavor: dark mode";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 500);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await.unwrap();
+        let r = request_from_reader(&mut buffered, &settings).await.unwrap();
 
         assert_eq!(r.request_line.method, "POST");
         assert_eq!(r.request_line.request_target, "/coffee");
@@ -431,9 +463,13 @@ mod tests {
              Accept: */*\r\n\
              \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 1);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered).await;
+        let result = request_from_reader(&mut buffered, &settings).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -449,9 +485,13 @@ mod tests {
              Accept: */*\r\n\
              \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 8);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered).await;
+        let result = request_from_reader(&mut buffered, &settings).await;
 
         assert!(
             matches!(result, Err(HttpError::UnsupportedVersion(_))),
@@ -467,9 +507,13 @@ mod tests {
              Accept: */*\r\n\
              \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered).await;
+        let result = request_from_reader(&mut buffered, &settings).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -485,9 +529,13 @@ mod tests {
              Accept: */*\r\n\
              \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered).await;
+        let result = request_from_reader(&mut buffered, &settings).await;
 
         assert!(
             matches!(result, Err(HttpError::InvalidMethod(_))),
@@ -503,9 +551,13 @@ mod tests {
             Accept: */*\r\n\
             \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 15);
         let mut buffered = BufReader::new(&mut chunk_reader);
-        let result = request_from_reader(&mut buffered).await;
+        let result = request_from_reader(&mut buffered, &settings).await;
 
         assert!(
             matches!(result, Err(HttpError::MalformedRequestLine)),
@@ -518,7 +570,11 @@ mod tests {
         let input = "GET / HTTP/1.1";
         let mut reader = input.as_bytes();
 
-        let result = request_from_reader(&mut reader).await;
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let result = request_from_reader(&mut reader, &settings).await;
 
         assert!(matches!(result, Err(HttpError::UnexpectedEOF)));
     }
@@ -528,7 +584,12 @@ mod tests {
         let input = "GET / HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await.unwrap();
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let r = request_from_reader(&mut buffered, &settings).await.unwrap();
 
         assert!(r.headers.get("host").is_some());
         assert!(r.headers.get("user-agent").is_some());
@@ -543,7 +604,12 @@ mod tests {
         let input = "GET / HTTP/1.1\r\nHost localhost:8080\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::MalformedHeader)));
@@ -563,15 +629,25 @@ mod tests {
                 Content-Length: 100000\r\n\
                 \r\n";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         client_write.write_all(headers.as_bytes()).await.unwrap();
         client_write.write_all(b"abcd").await.unwrap();
         client_write.flush().await.unwrap();
 
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::time::advance(Duration::from_secs(31)).await; //TODO 
+        let settings_clone = settings.clone();
 
-        let result = request_from_reader(&mut buffered).await.unwrap_err();
-        assert!(matches!(result, HttpError::Timeout));
+        let handle =
+            tokio::spawn(async move { request_from_reader(&mut buffered, &settings_clone).await });
+
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!handle.is_finished());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let result = handle.await.unwrap();
+        assert!(matches!(result, Err(HttpError::Timeout)));
     }
 
     #[tokio::test]
@@ -579,7 +655,12 @@ mod tests {
         let input = "GET / HTTP/1.1\r\nHost: localhost:8080\r\nHost: localhost:8081\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n";
         let mut chunk_reader = ChunkReader::new(input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         matches!(r, Err(HttpError::InvalidHeaders));
@@ -596,7 +677,12 @@ mod tests {
         input.push_str("\r\n\r\n");
         let mut chunk_reader = ChunkReader::new(&input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         matches!(r, Err(HttpError::InvalidHeaders));
@@ -611,7 +697,12 @@ mod tests {
         input.push_str("\r\n\r\n");
         let mut chunk_reader = ChunkReader::new(&input, 7);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         matches!(r, Err(HttpError::InvalidHeaders));
@@ -628,9 +719,13 @@ mod tests {
                         \r\n\
                         hello world!";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await.unwrap();
+        let r = request_from_reader(&mut buffered, &settings).await.unwrap();
 
         assert_eq!(String::from_utf8(r.body).unwrap(), "hello world!");
     }
@@ -644,9 +739,13 @@ mod tests {
                         \r\n\
                         hello world!";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::UnexpectedEOF)));
@@ -661,9 +760,13 @@ mod tests {
                         \r\n\
                         ";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
@@ -678,9 +781,13 @@ mod tests {
                         \r\n\
                         ";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
@@ -696,9 +803,13 @@ mod tests {
                         \r\n\
                         hello world!";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 30);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_err());
         assert!(matches!(r, Err(HttpError::InvalidBodyLength)));
@@ -712,9 +823,13 @@ mod tests {
                         \r\n\
                         hello world!";
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(r.is_ok());
         let request = r.unwrap();
@@ -723,11 +838,15 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_body_exceeds_limit() {
-        let input = large_body_test_input(8 * 1024 * 1024);
+        let input = large_body_test_input(16 * 1024 * 1024);
+
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
 
         let mut chunk_reader = ChunkReader::new(&input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(matches!(r, Err(HttpError::ContentTooLarge)));
     }
@@ -736,9 +855,13 @@ mod tests {
     async fn reject_when_headers_exceed_limit() {
         let input = large_header_test_input(32 * 1024);
 
+        let config_source = File::with_name("config");
+        let config = Config::builder().add_source(config_source).build().unwrap();
+        let settings: Settings = config.clone().try_deserialize().unwrap();
+
         let mut chunk_reader = ChunkReader::new(&input, 32);
         let mut buffered: BufReader<&mut ChunkReader<'_>> = BufReader::new(&mut chunk_reader);
-        let r = request_from_reader(&mut buffered).await;
+        let r = request_from_reader(&mut buffered, &settings).await;
 
         assert!(matches!(r, Err(HttpError::ContentTooLarge)));
     }

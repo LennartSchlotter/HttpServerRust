@@ -4,12 +4,13 @@ use crate::http::{
     request::{HttpError, request_from_reader},
     response::{Response, StatusCode, html_response},
 };
-use crate::runtime::handler::Handler;
+use crate::runtime::router::Router;
+use config::{Config, ConfigError, File};
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject},
 };
-use std::env;
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -31,18 +32,50 @@ use tokio_rustls::TlsAcceptor;
 
 /// A struct representing an instance of a `HttpServer`, containing the state of the server.
 #[derive(Debug)]
-pub struct Server<H: Handler> {
-    server_state: Arc<ServerState<H>>,
+pub struct Server {
+    server_state: Arc<ServerState>,
 }
 
 /// A struct representing the state of a server with the associated listener, whether or not the server has been closed and the handler.
 #[derive(Debug)]
-struct ServerState<H: Handler> {
+struct ServerState {
     listener: TcpListener,
     closed: AtomicBool,
     limiter: ConnectionLimiter,
     tls_config: Arc<ServerConfig>,
-    handler: Arc<H>,
+    router: Arc<Router>,
+    settings: Arc<Settings>,
+}
+
+/// A struct containing the configurable parts of the application
+#[derive(Clone, Debug, Deserialize)]
+pub struct Settings {
+    /// The port to be used for the main https entry
+    port: u16,
+    /// The port to be used to listen for http requests, which are redirected to https
+    http_port: u16,
+    /// The total amount of clients able to connect to the server
+    max_clients: usize,
+    /// The directory in which the certificate private key is stored
+    cert_key_dir: String,
+    /// The directory in which the private key is stored
+    tls_key_dir: String,
+    /// The address for the tcp listener
+    tcp_listener_address: String,
+    /// The connection limit per ip
+    ip_connection_limit: usize,
+    /// The timeout for processing a request
+    connection_timeout: u64,
+    /// The timeout for `keep_alive`
+    keep_alive_timeout: u64,
+    /// The timeout for parsing a request
+    pub parsing_timeout: u64,
+    /// The size limit in `MIB` for the entire request
+    pub request_size_limit_in_mib: usize,
+    /// The size limit in `KIB` for the entire request
+    pub header_size_limit_in_kib: usize,
+    /// The maximum amount of headers allowed per request
+    pub max_header_size: usize,
 }
 
 /// Limits connections for a certain Tcp Connection.
@@ -60,18 +93,18 @@ struct ConnectionGuard {
     addr: IpAddr,
 }
 
-impl<H: Handler> Server<H> {
+impl Server {
     /// Sets the closed state of the server it's called on.
     pub fn close(&self) {
         self.server_state.closed.store(true, Ordering::SeqCst);
     }
 }
 
-impl<H: Handler + Send + Sync + 'static> ServerState<H> {
+impl ServerState {
     /// Called on a `ServerState`, listening for connections.
     pub async fn listen(self: Arc<Self>) {
-        const MAX_CLIENTS: usize = 5000;
-        let sem = Arc::new(Semaphore::new(MAX_CLIENTS));
+        let max_clients = self.settings.max_clients;
+        let sem = Arc::new(Semaphore::new(max_clients));
         let acceptor = Arc::new(TlsAcceptor::from(Arc::clone(&self.tls_config)));
         loop {
             if self.closed.load(Ordering::SeqCst) {
@@ -82,18 +115,20 @@ impl<H: Handler + Send + Sync + 'static> ServerState<H> {
                 Ok((mut stream, addr)) => {
                     let ip = addr.ip();
                     if let Some(ip_guard) = self.limiter.try_connect(ip) {
-                        let handler_clone = Arc::clone(&self.handler);
+                        let router_clone = Arc::clone(&self.router);
                         let sem_clone = Arc::clone(&sem);
                         let acceptor_clone = Arc::clone(&acceptor);
+                        let settings_clone = Arc::clone(&self.settings);
                         tokio::spawn(async move {
                             if let Ok(global_guard) = sem_clone.try_acquire() {
                                 println!("Accepted a new connection");
                                 let _guard = ip_guard; //move ownership
                                 let _global_guard = global_guard; //move ownership
-
                                 match TlsAcceptor::accept(&acceptor_clone, &mut stream).await {
                                     Ok(tls_stream) => {
-                                        if let Err(e) = handle(tls_stream, &*handler_clone).await {
+                                        if let Err(e) =
+                                            handle(tls_stream, &router_clone, &settings_clone).await
+                                        {
                                             eprintln!("Encountered error handling the stream: {e}");
                                         }
                                     }
@@ -168,14 +203,12 @@ impl Drop for ConnectionGuard {
 
 /// Helper function to extract a TLS server config.
 ///
-/// This will for now only read the paths for the certificate and private key from the environment, but later be expanded to read configuration from a config file.
-///
 /// # Errors
 ///
-/// Throws an Error if reading files fails.
-fn build_tls_config() -> Result<ServerConfig, Error> {
-    let cert_dir = env::var("TLS_CERT_PATH").unwrap_or_else(|_| "certs/cert.pem".to_string());
-    let pk_dir = env::var("TLS_KEY_PATH").unwrap_or_else(|_| "certs/cert.key.pem".to_string());
+/// Throws an Error if reading files fails.s
+fn build_tls_config(settings: &Settings) -> Result<ServerConfig, Error> {
+    let cert_dir = settings.cert_key_dir.clone();
+    let pk_dir = settings.tls_key_dir.clone();
 
     let config_builder = ServerConfig::builder().with_no_client_auth();
     let cert_chain: Vec<_> = CertificateDer::pem_file_iter(cert_dir)
@@ -197,23 +230,26 @@ fn build_tls_config() -> Result<ServerConfig, Error> {
 /// # Errors
 ///
 /// Throws an Error if binding the tcp listener fails.
-pub async fn serve<H: Handler + Send + Sync + 'static>(
-    port: u16,
-    handler: Arc<H>,
-) -> Result<Server<H>, Error> {
-    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-    let limiter = ConnectionLimiter::new(20);
+pub async fn serve(config: Config, router: Router) -> Result<Server, Error> {
+    let settings = Arc::new(config.try_deserialize::<Settings>().map_err(Error::other)?);
+    let router = Arc::new(router);
+    let listener =
+        TcpListener::bind((settings.tcp_listener_address.as_str(), settings.port)).await?;
+    let http_listener =
+        TcpListener::bind((settings.tcp_listener_address.as_str(), settings.http_port)).await?;
+    let limiter = ConnectionLimiter::new(settings.ip_connection_limit);
 
-    let mut config = build_tls_config()?;
+    let mut server_config = build_tls_config(&settings)?;
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    let tls_config = Arc::new(config);
+    let tls_config = Arc::new(server_config);
     let state = ServerState {
         listener,
-        handler,
+        router,
         limiter,
         tls_config,
         closed: AtomicBool::new(false),
+        settings,
     };
     let state_for_main = Arc::new(state);
     let state_for_thread = Arc::clone(&state_for_main);
@@ -223,6 +259,25 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
     tokio::spawn(async move {
         state_for_thread.listen().await;
     });
+    tokio::spawn(async move {
+        loop {
+            match http_listener.accept().await {
+                Ok((mut stream, _addr)) => {
+                    let mut headers = Headers::new();
+                    headers.insert("Location", "https://localhost:443"); //FIXME, don't hardcode this, construct it manually with config value
+                    let response = Response {
+                        status: StatusCode::MovedPermanently,
+                        headers,
+                        body: b"".to_vec(),
+                    };
+                    if let Err(e) = write_response(&mut stream, response).await {
+                        eprintln!("Error writing response {e}");
+                    }
+                }
+                Err(err) => eprintln!("Error accepting HTTP connection: {err}"),
+            }
+        }
+    });
     Ok(serverhandle)
 }
 
@@ -231,14 +286,20 @@ pub async fn serve<H: Handler + Send + Sync + 'static>(
 /// # Errors
 ///
 /// Throws an `HttpError` if the parsing process fails.
-async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
+async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut stream: S,
-    handler: &H,
+    router: &Router,
+    settings: &Settings,
 ) -> Result<(), HttpError> {
-    const SERVER_TIMEOUT: Duration = Duration::from_secs(120);
+    let server_timeout_amount = settings.connection_timeout;
+    let server_timeout = Duration::from_secs(server_timeout_amount);
 
     loop {
-        let result = timeout(SERVER_TIMEOUT, process_request(&mut stream, handler)).await;
+        let result = timeout(
+            server_timeout,
+            process_request(&mut stream, router, settings),
+        )
+        .await;
 
         match result {
             Ok(Ok(should_continue)) => {
@@ -270,13 +331,15 @@ async fn handle<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
 /// # Errors
 ///
 /// Throws an `HttpError` if parsing fails or if a timeout occurs.
-async fn process_request<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
+async fn process_request<S: AsyncRead + AsyncWrite + Unpin + Send>(
     mut stream: &mut S,
-    handler: &H,
+    router: &Router,
+    settings: &Settings,
 ) -> Result<bool, HttpError> {
-    const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
-    let request_future = request_from_reader(&mut stream);
-    let request_res = timeout(KEEP_ALIVE_TIMEOUT, request_future).await;
+    let keep_alive_timeout_value = settings.keep_alive_timeout;
+    let keep_alive_timeout = Duration::from_secs(keep_alive_timeout_value);
+    let request_future = request_from_reader(&mut stream, settings);
+    let request_res = timeout(keep_alive_timeout, request_future).await;
     let request = match request_res {
         Ok(Ok(req)) => req,
         Ok(Err(HttpError::UnexpectedEOF)) => {
@@ -307,26 +370,21 @@ async fn process_request<H: Handler, S: AsyncRead + AsyncWrite + Unpin + Send>(
     // FIXME We should probably have a dedicated place to manage headers
     let keep_alive = Headers::get(&request.headers, "connection") != Some("close");
 
-    let response = handler.call(&request, &mut stream).await?;
-    if let Some(response) = response {
-        write_status_line(&mut stream, response.status).await?;
-        let mut headers = response.headers;
-        write_headers(&mut stream, &mut headers).await?;
-        stream.write_all(&response.body).await?;
+    let response = router.call(request).await?;
+    write_status_line(&mut stream, response.status).await?;
+    let mut headers = response.headers;
+    write_headers(&mut stream, &mut headers).await?;
+    stream.write_all(&response.body).await?;
 
-        let connection_value = headers.get("connection");
-        if connection_value == Some("close") {
-            Ok(false)
-        } else {
-            if !keep_alive {
-                return Ok(false);
-            }
-            stream.flush().await?;
-            Ok(true)
-        }
-    } else {
-        stream.flush().await?;
+    let connection_value = headers.get("connection");
+    if connection_value == Some("close") {
         Ok(false)
+    } else {
+        if !keep_alive {
+            return Ok(false);
+        }
+        stream.flush().await?;
+        Ok(true)
     }
 }
 
@@ -347,61 +405,79 @@ async fn write_response<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Helper function to import the config and set defaults.
+///
+/// # Errors
+///
+/// Throws a `ConfigError` if setting the defaults or building fails.
+pub fn build_config() -> Result<Config, ConfigError> {
+    let config_source = File::with_name("config");
+    let config = Config::builder()
+        .add_source(config_source)
+        .set_default("port", 443)?
+        .set_default("http_port", 80)?
+        .set_default("max_clients", 5000)?
+        .set_default("cert_key_dir", "certs/cert.pem")?
+        .set_default("tls_key_dir", "certs/cert.key.pem")?
+        .set_default("tcp_listener_address", "127.0.0.1")?
+        .set_default("ip_connection_limit", 20)?
+        .set_default("keep_alive_timeout", 15)?
+        .set_default("parsing_timeout", 30)?
+        .set_default("request_size_limit_in_mib", 16)?
+        .set_default("header_size_limit_in_kib", 32)?
+        .set_default("max_header_size", 72)?
+        .build()?;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use config::{Config, File};
     use reqwest::Client;
     use rustls::{
         ClientConfig, ProtocolVersion, RootCertStore, ServerConfig,
         pki_types::{PrivatePkcs8KeyDer, ServerName},
     };
-    use tokio::{
-        io::AsyncWrite,
-        time::{sleep, timeout},
-    };
+    use tokio::time::{sleep, timeout};
     use tokio_rustls::{TlsAcceptor, TlsConnector};
 
     use crate::{
-        http::{
-            request::{HttpError, Request},
-            response::{Response, StatusCode, html_response},
-        },
+        http::response::{StatusCode, html_response},
         runtime::{
-            handler::Handler,
+            router::Router,
             server::{ConnectionLimiter, serve},
         },
     };
 
     use rcgen::{CertifiedKey, generate_simple_self_signed};
 
-    struct MyHandler;
-
-    impl Handler for MyHandler {
-        async fn call<W: AsyncWrite + Unpin + Send>(
-            &self,
-            request: &Request,
-            _stream: W,
-        ) -> Result<Option<Response>, HttpError> {
-            if request.request_line.request_target.as_str() == "/yourproblem" {
-                let body = "<html><body><h1>Bad Request</h1></body></html>";
-                let response = html_response(StatusCode::BadRequest, body);
-                Ok(Some(response))
-            } else {
-                let body = "<html><body><h1>All good!</h1></body></html>";
-                let response = html_response(StatusCode::Ok, body);
-                Ok(Some(response))
-            }
-        }
+    /// Helper function that serves a router to a test that can be individiually configured with endpoints needed.
+    fn serve_router() -> Router {
+        Router::new()
     }
 
     #[tokio::test]
     async fn server_can_establish_connection() {
-        let handler = MyHandler;
-        let handler_arc = Arc::new(handler);
-        let server = serve(1026, handler_arc)
-            .await
-            .expect("Failed to start server");
+        let mut router = serve_router();
+        router.route("/test", |_req| async {
+            html_response(
+                StatusCode::Ok,
+                "<html><body><h1>All good!</h1></body></html>",
+            )
+        });
+
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1026)
+            .unwrap()
+            .set_override("http_port", 1027)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, router).await.expect("Failed to start server");
 
         let base_url = format!("https://127.0.0.1:{}", 1026);
 
@@ -431,13 +507,20 @@ mod tests {
 
     #[tokio::test]
     async fn endpoints_write_correct_response() {
-        let handler = MyHandler;
-        let handler_arc = Arc::new(handler);
-        let server = serve(8081, handler_arc)
-            .await
-            .expect("Failed to start server");
+        let router = serve_router();
 
-        let base_url = format!("https://127.0.0.1:{}", 8081);
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1028)
+            .unwrap()
+            .set_override("http_port", 1029)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, router).await.expect("Failed to start server");
+
+        let base_url = format!("https://127.0.0.1:{}", 1028);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
@@ -465,13 +548,20 @@ mod tests {
 
     #[tokio::test]
     async fn server_can_establish_multiple_connections() {
-        let handler = MyHandler;
-        let handler_arc = Arc::new(handler);
-        let server = serve(8082, handler_arc)
-            .await
-            .expect("Failed to start server");
+        let router = serve_router();
 
-        let base_url = format!("https://127.0.0.1:{}", 8082);
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1030)
+            .unwrap()
+            .set_override("http_port", 1031)
+            .unwrap()
+            .build()
+            .unwrap();
+        let server = serve(config, router).await.expect("Failed to start server");
+
+        let base_url = format!("https://127.0.0.1:{}", 1030);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
@@ -497,13 +587,27 @@ mod tests {
     #[tokio::test]
     async fn server_works_concurrently() {
         const CONCURRENT_REQUESTS: usize = 20;
-        let handler = MyHandler;
-        let handler_arc = Arc::new(handler);
-        let server = serve(1025, handler_arc)
-            .await
-            .expect("Failed to start server");
+        let mut router = serve_router();
+        router.route("/test", |_req| async {
+            html_response(
+                StatusCode::Ok,
+                "<html><body><h1>All good!</h1></body></html>",
+            )
+        });
 
-        let base_url = format!("https://127.0.0.1:{}", 1025);
+        let config_source = File::with_name("config");
+        let config = Config::builder()
+            .add_source(config_source)
+            .set_override("port", 1032)
+            .unwrap()
+            .set_override("http_port", 1033)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let server = serve(config, router).await.expect("Failed to start server");
+
+        let base_url = format!("https://127.0.0.1:{}", 1032);
 
         let client = Client::builder()
             .danger_accept_invalid_certs(true)

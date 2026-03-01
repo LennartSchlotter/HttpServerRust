@@ -1,0 +1,13 @@
+port = 443
+http_port = 80
+max_clients = 5000
+cert_key_dir = "certs/cert.pem"
+tls_key_dir = "certs/cert.key.pem"
+tcp_listener_address = "127.0.0.1"
+ip_connection_limit = 20
+connection_timeout = 120
+keep_alive_timeout = 15
+parsing_timeout = 30
+request_size_limit_in_mib = 16
+header_size_limit_in_kib = 32
+max_header_size = 72

@@ -3,7 +3,10 @@ use std::{
     io::{self},
 };
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::{
+    fs::read_to_string,
+    io::{AsyncWrite, AsyncWriteExt},
+};
 
 use crate::{http::headers::Headers, http::request::HttpError};
 
@@ -25,6 +28,8 @@ pub enum StatusCode {
     Ok = 200,
     /// Represents a successful creation
     Created = 201,
+    /// Represents a redirect
+    MovedPermanently = 301,
     /// Represents an invalid request
     BadRequest = 400,
     /// Represents the request target not being found as a valid endpoint
@@ -51,6 +56,7 @@ impl StatusCode {
         match self {
             Self::Ok => "OK",
             Self::Created => "Created",
+            Self::MovedPermanently => "Moved Permanently",
             Self::BadRequest => "Bad Request",
             Self::NotFound => "Not Found",
             Self::RequestTimeout => "Request Timeout",
@@ -183,6 +189,23 @@ pub fn html_response(status: StatusCode, html: &str) -> Response {
     }
 }
 
+/// Helper function to remove boilerplate for creating responses with associated headers through a passed html file.
+///
+/// # Errors
+///
+/// Returns an `HttpError` if reading the file fails.
+pub async fn file_response(status: StatusCode, path: &str) -> Result<Response, HttpError> {
+    let mut headers = Headers::new();
+    let body = read_to_string(path).await?;
+    headers.insert("content-type", "text/html");
+    headers.insert("content-length", body.len().to_string());
+    Ok(Response {
+        status,
+        headers,
+        body: body.as_bytes().to_vec(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -198,6 +221,7 @@ mod tests {
         let valid_methods = [
             (StatusCode::Ok, "OK"),
             (StatusCode::Created, "Created"),
+            (StatusCode::MovedPermanently, "Moved Permanently"),
             (StatusCode::BadRequest, "Bad Request"),
             (StatusCode::NotFound, "Not Found"),
             (StatusCode::InternalServerError, "Internal Server Error"),

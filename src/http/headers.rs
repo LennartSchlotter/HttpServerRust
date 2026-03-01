@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use crate::http::request::HttpError;
 
 /// A `HashMap` of two strings representing key, value pairs used in HTTP Headers.
-///
-/// Hash Maps do not guarantee ordering in Rust. SHOULD be fine as Http Headers / Trailers do not need to be ordered
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Headers(HashMap<String, String>);
 
