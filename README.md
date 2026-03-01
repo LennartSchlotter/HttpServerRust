@@ -59,7 +59,6 @@ The code features at times extensive in-line comments to document issues, lesson
 ### Extensibility
 - Enable easier configuration of endpoints and responses through a router
     - Streamline response generation
-    [- Dynamic path segments]
 - Configuration of hardcoded values with config support
 - Redirect HTTP to HTTPS
 
@@ -78,3 +77,4 @@ The code features at times extensive in-line comments to document issues, lesson
 ### Future
 - HTTP Pipelining
 - Better Header handling
+- Dynamic Path Segments
