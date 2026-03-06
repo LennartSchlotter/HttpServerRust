@@ -5,7 +5,7 @@ Standalone Rust Program, serving as a learning project. The goal is to implement
 - Supports HTTP/1.1
 - Request Parser
 - Response Handling
-- Full Tokio compatibility
+- Async I/O via Tokio
 - Keep-alive and slow requests handling
 - TLS / HTTP redirect
 
@@ -29,11 +29,7 @@ async fn main() -> Result<(), HttpError> {
 }
 ```
 
-# Additional Files
-The `/tmp` folder includes additional files of certain sub-goals achieved in the process of creating the server. They showcase the learning steps in a more detailed way.
-
-### Documentation
-The code features at times extensive in-line comments to document issues, lessons learned as well as possibilities for extending the code.
+Refer to `/examples` for additional, more detailed code that showcases functionality.
 
 # Learning Process
 ## Fundamental Concepts learned / applied
@@ -62,8 +58,9 @@ The code features at times extensive in-line comments to document issues, lesson
 - Configuration of hardcoded values with config support
 - Redirect HTTP to HTTPS
 
-#### Known Limitation
-- The chunked encoding functionality is not supported by the server implementation.
+#### Known Limitations
+- The chunked encoding functionality is not supported by the server implementation
+- No method-based routing
 
 ## Post-Mortem
 ### What would I do differently?
@@ -73,6 +70,8 @@ The code features at times extensive in-line comments to document issues, lesson
 - Be more mindful of Security
 
 ### Review
+- `from_utf8_lossy` was used where a hard rejection of non-ASCII would have been more secure
+- Error type grew to include concerns unrelated to HTTP parsing. A more detailed plan for module boundaries and error handling would've been preferable
 
 ### Future
 - HTTP Pipelining
