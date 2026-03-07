@@ -59,8 +59,10 @@ Refer to `/examples` for additional, more detailed code that showcases functiona
 - Redirect HTTP to HTTPS
 
 #### Known Limitations
-- The chunked encoding functionality is not supported by the server implementation
-- No method-based routing
+- The chunked encoding functionality is not supported (functionality exists, but not wired up)
+    - The reason for this is that it's fundamentally incompatible with the logic implementation for writing responses and would require a larger scale refactor
+- No method-based routing / No query string handling
+- Large files are buffered in memory, not streamed. All file responses are also serves as `text/html`
 
 ## Post-Mortem
 ### What would I do differently?
@@ -72,8 +74,10 @@ Refer to `/examples` for additional, more detailed code that showcases functiona
 ### Review
 - `from_utf8_lossy` was used where a hard rejection of non-ASCII would have been more secure
 - Error type grew to include concerns unrelated to HTTP parsing. A more detailed plan for module boundaries and error handling would've been preferable
+- A dedicated Builder could be created for `Response`, enabling a cleaner generation, but also standardizing helper functions
+- Header handling has a lot of room for improvements
+    - Certain headers like `Connection`, `Date` are ommited in responses
 
 ### Future
 - HTTP Pipelining
-- Better Header handling
 - Dynamic Path Segments

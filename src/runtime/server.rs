@@ -40,6 +40,7 @@ pub struct Server {
 #[derive(Debug)]
 struct ServerState {
     listener: TcpListener,
+    http_listener: TcpListener,
     closed: AtomicBool,
     limiter: ConnectionLimiter,
     tls_config: Arc<ServerConfig>,
@@ -111,47 +112,78 @@ impl ServerState {
                 println!("We cannot take any new connections as the server was closed.");
                 return;
             }
-            match self.listener.accept().await {
-                Ok((mut stream, addr)) => {
-                    let ip = addr.ip();
-                    if let Some(ip_guard) = self.limiter.try_connect(ip) {
-                        let router_clone = Arc::clone(&self.router);
-                        let sem_clone = Arc::clone(&sem);
-                        let acceptor_clone = Arc::clone(&acceptor);
-                        let settings_clone = Arc::clone(&self.settings);
-                        tokio::spawn(async move {
-                            if let Ok(global_guard) = sem_clone.try_acquire() {
-                                println!("Accepted a new connection");
-                                let _guard = ip_guard; //move ownership
-                                let _global_guard = global_guard; //move ownership
-                                match TlsAcceptor::accept(&acceptor_clone, &mut stream).await {
-                                    Ok(tls_stream) => {
-                                        if let Err(e) =
-                                            handle(tls_stream, &router_clone, &settings_clone).await
-                                        {
-                                            eprintln!("Encountered error handling the stream: {e}");
+            tokio::select! {
+                result = self.listener.accept() => {
+                    match result {
+                        Ok((mut stream, addr)) => {
+                            let ip = addr.ip();
+                            if let Some(ip_guard) = self.limiter.try_connect(ip) {
+                                let router_clone = Arc::clone(&self.router);
+                                let sem_clone = Arc::clone(&sem);
+                                let acceptor_clone = Arc::clone(&acceptor);
+                                let settings_clone = Arc::clone(&self.settings);
+                                tokio::spawn(async move {
+                                    if let Ok(global_guard) = sem_clone.try_acquire() {
+                                        println!("Accepted a new connection");
+                                        let _guard = ip_guard; //move ownership
+                                        let _global_guard = global_guard; //move ownership
+                                        match TlsAcceptor::accept(&acceptor_clone, &mut stream).await {
+                                            Ok(tls_stream) => {
+                                                if let Err(e) =
+                                                    handle(tls_stream, &router_clone, &settings_clone).await
+                                                {
+                                                    eprintln!("Encountered error handling the stream: {e}");
+                                                }
+                                            }
+                                            Err(err) => {
+                                                eprintln!("Encountered error during TSL handshake: {err}");
+                                            }
                                         }
+                                    } else {
+                                        println!("Too many connections, rejecting client.");
+                                        let _ = stream.shutdown().await;
                                     }
-                                    Err(err) => {
-                                        eprintln!("Encountered error during TSL handshake: {err}");
-                                    }
-                                }
+                                });
                             } else {
-                                println!("Too many connections, rejecting client.");
+                                println!("Shutting down, request limit reached");
                                 let _ = stream.shutdown().await;
                             }
-                        });
-                    } else {
-                        println!("Shutting down, request limit reached");
-                        let _ = stream.shutdown().await;
+                        }
+                        Err(e) => {
+                            if self.closed.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            eprintln!("Encountered error accepting connection: {e:}");
+                            sleep(Duration::from_millis(50)).await;
+                        }
                     }
                 }
-                Err(error) => {
-                    if self.closed.load(Ordering::SeqCst) {
-                        break;
+                result = self.http_listener.accept() => {
+                    match result {
+                        Ok((mut stream, addr)) => {
+                            let ip = addr.ip();
+                            if let Some(ip_guard) = self.limiter.try_connect(ip) {
+                                let sem_clone = Arc::clone(&sem);
+                                let settings_clone = Arc::clone(&self.settings);
+                                tokio::spawn(async move {
+                                    if let Ok(global_guard) = sem_clone.try_acquire() {
+                                        let _guard = ip_guard; //move ownership
+                                        let _global_guard = global_guard; //move ownership
+                                        let _ = handle_redirect(stream, &settings_clone).await;
+                                    } else {
+                                        println!("Too many connections, rejecting client.");
+                                        let _ = stream.shutdown().await;
+                                    }
+                                });
+                            } else {
+                                println!("Shutting down, request limit reached");
+                                let _ = stream.shutdown().await;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error accepting HTTP connection: {e}");
+                        }
                     }
-                    eprintln!("Encountered error accepting connection: {error:}");
-                    sleep(Duration::from_millis(50)).await;
                 }
             }
         }
@@ -245,6 +277,7 @@ pub async fn serve(config: Config, router: Router) -> Result<Server, Error> {
     let tls_config = Arc::new(server_config);
     let state = ServerState {
         listener,
+        http_listener,
         router,
         limiter,
         tls_config,
@@ -253,32 +286,13 @@ pub async fn serve(config: Config, router: Router) -> Result<Server, Error> {
     };
     let state_for_main = Arc::new(state);
     let state_for_thread = Arc::clone(&state_for_main);
-    let serverhandle = Server {
+    let server_handle = Server {
         server_state: state_for_main,
     };
     tokio::spawn(async move {
         state_for_thread.listen().await;
     });
-    tokio::spawn(async move {
-        loop {
-            match http_listener.accept().await {
-                Ok((mut stream, _addr)) => {
-                    let mut headers = Headers::new();
-                    headers.insert("Location", "https://localhost:443"); //FIXME, don't hardcode this, construct it manually with config value
-                    let response = Response {
-                        status: StatusCode::MovedPermanently,
-                        headers,
-                        body: b"".to_vec(),
-                    };
-                    if let Err(e) = write_response(&mut stream, response).await {
-                        eprintln!("Error writing response {e}");
-                    }
-                }
-                Err(err) => eprintln!("Error accepting HTTP connection: {err}"),
-            }
-        }
-    });
-    Ok(serverhandle)
+    Ok(server_handle)
 }
 
 /// Handles a specific connection's parsing based on the associated TCP stream.
@@ -323,6 +337,72 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send>(
             }
         }
     }
+    Ok(())
+}
+
+/// Handles redirecting an HTTP Request to HTTPS.
+///
+/// # Errors
+///
+/// Throws an `HttpError` if the parsing process fails.
+async fn handle_redirect<S: AsyncRead + AsyncWrite + Unpin + Send>(
+    mut stream: S,
+    settings: &Settings,
+) -> Result<(), HttpError> {
+    let server_timeout_amount = settings.connection_timeout;
+    let server_timeout = Duration::from_secs(server_timeout_amount);
+    let request_future = request_from_reader(&mut stream, settings);
+    let result = timeout(
+        server_timeout,
+        request_future,
+    )
+    .await;
+    
+    let request = match result {
+        Ok(Ok(req)) => req,
+        Ok(Err(HttpError::UnexpectedEOF)) => {
+            return Ok(());
+        }
+        Ok(Err(HttpError::Timeout)) => {
+            let html = "<html><body><h1>Request timed out</h1></body></html>";
+            let response = html_response(StatusCode::RequestTimeout, html);
+
+            write_response(&mut stream, response).await?;
+            return Ok(());
+        }
+        Ok(Err(_e)) => {
+            let html = "<html><body><h1>Bad Request</h1></body></html>";
+            let response = html_response(StatusCode::BadRequest, html);
+
+            write_response(&mut stream, response).await?;
+            return Ok(());
+        }
+        Err(_) => {
+            let html = "<html><body><h1>Bad Request</h1></body></html>";
+            let response = html_response(StatusCode::BadRequest, html);
+            write_response(&mut stream, response).await?;
+            return Ok(());
+        }
+    };
+
+    let host_res = request.headers.get("host");
+    let path = &request.request_line.request_target;
+    let response = match host_res {
+        Some(host) => {
+            let mut headers = Headers::new();
+            headers.insert("Location", format!("https://{host}{path}"));
+            Response {
+                status: StatusCode::MovedPermanently,
+                headers,
+                body: b"".to_vec(),
+            }
+        }
+        None => {
+            html_response(StatusCode::BadRequest, "<html><body><h1>Bad Request</h1></body></html>")
+        }
+    };
+
+    write_response(&mut stream, response).await?;
     Ok(())
 }
 
@@ -378,9 +458,11 @@ async fn process_request<S: AsyncRead + AsyncWrite + Unpin + Send>(
 
     let connection_value = headers.get("connection");
     if connection_value == Some("close") {
+        stream.flush().await?;
         Ok(false)
     } else {
         if !keep_alive {
+            stream.flush().await?;
             return Ok(false);
         }
         stream.flush().await?;
@@ -426,6 +508,7 @@ pub fn build_config() -> Result<Config, ConfigError> {
         .set_default("request_size_limit_in_mib", 16)?
         .set_default("header_size_limit_in_kib", 32)?
         .set_default("max_header_size", 72)?
+        .set_default("connection_timeout", 120)?
         .build()?;
     Ok(config)
 }
