@@ -4,7 +4,7 @@
 //!
 //! This crate provides parsers and request / response types to handle HTTP requests.
 //!
-//! Refer to the included binary example for a complete server implementation.
+//! Refer to the included binary example for a minimal server implementation.
 /// Logic containing parsing the HTTP.
 pub mod http;
 /// Logic handling runtime logic for a server instance.

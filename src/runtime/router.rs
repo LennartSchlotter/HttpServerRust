@@ -33,7 +33,7 @@ impl Router {
 
     /// Retrieves an optional closure if the passed endpoint is present in the router.
     #[must_use]
-    pub fn retrieve(&self, endpoint: &str) -> Option<&HandlerFn> {
+    fn retrieve(&self, endpoint: &str) -> Option<&HandlerFn> {
         self.0.get(endpoint)
     }
 

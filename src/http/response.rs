@@ -83,7 +83,6 @@ pub async fn write_status_line<W: AsyncWrite + Unpin>(
         status_code.reason_phrase()
     );
     writer.write_all(line.as_bytes()).await?;
-    writer.flush().await?;
     Ok(())
 }
 
@@ -102,7 +101,6 @@ pub async fn write_headers<W: AsyncWrite + Unpin>(
     for (key, value) in headers.iter() {
         let line = format!("{key}: {value}\r\n");
         writer.write_all(line.as_bytes()).await?;
-        writer.flush().await?;
     }
     writer.write_all(b"\r\n").await?;
     Ok(())
@@ -169,7 +167,7 @@ pub async fn write_trailers<W: AsyncWrite + Unpin>(
 ) -> Result<(), HttpError> {
     for (key, value) in headers.iter() {
         writer
-            .write_all(format!("{}: {}\r\n", key.to_lowercase(), value.to_lowercase()).as_bytes())
+            .write_all(format!("{}: {}\r\n", key.to_lowercase(), value).as_bytes())
             .await?;
     }
     writer.write_all(b"\r\n").await?;
