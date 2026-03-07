@@ -352,12 +352,8 @@ async fn handle_redirect<S: AsyncRead + AsyncWrite + Unpin + Send>(
     let server_timeout_amount = settings.connection_timeout;
     let server_timeout = Duration::from_secs(server_timeout_amount);
     let request_future = request_from_reader(&mut stream, settings);
-    let result = timeout(
-        server_timeout,
-        request_future,
-    )
-    .await;
-    
+    let result = timeout(server_timeout, request_future).await;
+
     let request = match result {
         Ok(Ok(req)) => req,
         Ok(Err(HttpError::UnexpectedEOF)) => {
@@ -387,8 +383,14 @@ async fn handle_redirect<S: AsyncRead + AsyncWrite + Unpin + Send>(
 
     let host_res = request.headers.get("host");
     let path = &request.request_line.request_target;
-    let response = match host_res {
-        Some(host) => {
+    let response = host_res.map_or_else(
+        || {
+            html_response(
+                StatusCode::BadRequest,
+                "<html><body><h1>Bad Request</h1></body></html>",
+            )
+        },
+        |host| {
             let mut headers = Headers::new();
             headers.insert("Location", format!("https://{host}{path}"));
             Response {
@@ -396,11 +398,8 @@ async fn handle_redirect<S: AsyncRead + AsyncWrite + Unpin + Send>(
                 headers,
                 body: b"".to_vec(),
             }
-        }
-        None => {
-            html_response(StatusCode::BadRequest, "<html><body><h1>Bad Request</h1></body></html>")
-        }
-    };
+        },
+    );
 
     write_response(&mut stream, response).await?;
     Ok(())
