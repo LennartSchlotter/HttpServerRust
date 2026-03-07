@@ -1,6 +1,9 @@
 //! # Rust HTTP Server example implementation
 use httpserver::{
-    http::{request::HttpError, response::{Response, StatusCode, file_response, html_response}},
+    http::{
+        request::HttpError,
+        response::{Response, StatusCode, file_response, html_response},
+    },
     runtime::{
         router::Router,
         server::{build_config, serve},
@@ -11,11 +14,14 @@ use httpserver::{
 async fn main() -> Result<(), HttpError> {
     let mut router = Router::new();
     router.route("/", |_req| async {
-        match file_response(StatusCode::Ok, "/static/hello.html").await {
-            Ok(response) => response,
-            Err(_) => html_response(StatusCode::InternalServerError, "<html><body><h1>Internal Server Error</h1></body></html>"),
-        }
-        
+        file_response(StatusCode::Ok, "/static/hello.html")
+            .await
+            .unwrap_or_else(|_| {
+                html_response(
+                    StatusCode::InternalServerError,
+                    "<html><body><h1>Internal Server Error</h1></body></html>",
+                )
+            })
     });
 
     router.route("/echo", |req| async move {
@@ -38,15 +44,23 @@ async fn main() -> Result<(), HttpError> {
     // Example POST. Since the server doesn't differentiate by method, both GET /submit and POST /submit would work.
     router.route("/submit", |req| async move {
         if req.request_line.method != "POST" {
-            return html_response(StatusCode::BadRequest, "<html><body><h1>Method Not Allowed</h1></body></html>");
+            return html_response(
+                StatusCode::BadRequest,
+                "<html><body><h1>Method Not Allowed</h1></body></html>",
+            );
         }
 
-        let _body = match String::from_utf8(req.body) {
-            Ok(s) => s,
-            Err(_) => return html_response(StatusCode::BadRequest, "<html><body><h1>Bad Request</h1></body></html>"),
+        let Ok(_body) = String::from_utf8(req.body) else {
+            return html_response(
+                StatusCode::BadRequest,
+                "<html><body><h1>Bad Request</h1></body></html>",
+            );
         };
 
-        html_response(StatusCode::Ok, "<html><body><h1>Received</h1></body></html>")
+        html_response(
+            StatusCode::Ok,
+            "<html><body><h1>Received</h1></body></html>",
+        )
     });
 
     // This automatically builds a config placed anywhere in the directory.
