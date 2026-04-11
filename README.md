@@ -30,3 +30,6 @@ async fn main() -> Result<(), HttpError> {
 ```
 
 Refer to `/examples` for additional, more detailed code that showcases functionality.
+
+## Additional Notes
+As this is a learning project, information on the development process can be found in `Development.md`
