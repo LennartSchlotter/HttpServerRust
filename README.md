@@ -31,53 +31,5 @@ async fn main() -> Result<(), HttpError> {
 
 Refer to `/examples` for additional, more detailed code that showcases functionality.
 
-# Learning Process
-## Fundamental Concepts learned / applied
-- Network Programming
-    - Protocols
-        - HTTP/1.1, TCP, UDP, TLS
-- General Concepts
-    - Concurrency
-- Rust
-    - This project served as a complete introduction to the language
-
-## Expanding from the base version
-### Performance
-- Concurrency Model Change (Tokio Async)
-- `keep-alive` header
-
-### Security
-- Request Timeout
-- Request Size Limit
-- Header Validation
-- HTTPS (TLS 1.2 / 1.3)
-
-### Extensibility
-- Enable easier configuration of endpoints and responses through a router
-    - Streamline response generation
-- Configuration of hardcoded values with config support
-- Redirect HTTP to HTTPS
-
-#### Known Limitations
-- The chunked encoding functionality is not supported (functionality exists, but not wired up)
-    - The reason for this is that it's fundamentally incompatible with the logic implementation for writing responses and would require a larger scale refactor
-- No method-based routing / No query string handling
-- Large files are buffered in memory, not streamed. All file responses are also serves as `text/html`
-
-## Post-Mortem
-### What would I do differently?
-- Have a clearer structure of the goal from the get-go
-    - Internal Code Structure and refactoring needs
-    - Plan for the usage of the application
-- Be more mindful of Security
-
-### Review
-- `from_utf8_lossy` was used where a hard rejection of non-ASCII would have been more secure
-- Error type grew to include concerns unrelated to HTTP parsing. A more detailed plan for module boundaries and error handling would've been preferable
-- A dedicated Builder could be created for `Response`, enabling a cleaner generation, but also standardizing helper functions
-- Header handling has a lot of room for improvements
-    - Certain headers like `Connection`, `Date` are ommited in responses
-
-### Future
-- HTTP Pipelining
-- Dynamic Path Segments
+## Additional Notes
+As this is a learning project, information on the development process can be found in `Development.md`
